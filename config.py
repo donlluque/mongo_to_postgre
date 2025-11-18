@@ -1,3 +1,23 @@
+"""
+Configuración centralizada para el sistema de migración MongoDB → PostgreSQL.
+
+Este módulo define:
+- Credenciales y URIs de conexión (desde variables de entorno)
+- Mapeo de nombres de tablas compartidas
+- Configuración específica por colección (arquitectura multi-colección)
+
+Estructura:
+- Schema 'public': Entidades compartidas entre colecciones (users, customers, etc.)
+- Schemas específicos: Un schema por cada colección MongoDB migrada
+
+Uso:
+    import config
+    
+    # Obtener configuración de una colección
+    coleccion_config = config.COLLECTIONS["lml_processes_mesa4core"]
+    schema_destino = coleccion_config["postgres_schema"]
+"""
+
 import os
 from dotenv import load_dotenv
 
@@ -5,18 +25,15 @@ from dotenv import load_dotenv
 load_dotenv(override=True)
 
 # --- Configuración de MongoDB (Origen) ---
-# Lee las credenciales del entorno y construye la URI de conexión.
 MONGO_URI = (
     f"mongodb://{os.getenv('MONGO_USER')}:{os.getenv('MONGO_PASSWORD')}"
     f"@{os.getenv('MONGO_HOST')}:{os.getenv('MONGO_PORT')}/"
     f"?authSource={os.getenv('MONGO_AUTH_SOURCE')}&readPreference=primary"
     f"&directConnection=true&ssl=false"
 )
-MONGO_DATABASE_NAME = "mesa4core" # Nombre de la BBDD de origen
-MONGO_SOURCE_COLLECTION = "lml_processes_mesa4core" # Nombre de la coleccion a migrar
+MONGO_DATABASE_NAME = "mesa4core"
 
 # --- Configuración de PostgreSQL (Destino) ---
-# Lee las credenciales del entorno y las organiza en un diccionario.
 POSTGRES_CONFIG = {
     'dbname': os.getenv('POSTGRES_DB'),
     'user': os.getenv('POSTGRES_USER'),
@@ -25,7 +42,9 @@ POSTGRES_CONFIG = {
     'port': os.getenv('POSTGRES_PORT')
 }
 
-# --- Mapeo de Tablas de Destino ---
+# --- Nombres de Tablas Compartidas ---
+# Mapeo consistente de entidades que viven en schema 'public'
+# y son referenciadas por múltiples colecciones vía FKs
 TABLE_NAMES = {
     "main": "main",
     "users": "users",
@@ -38,6 +57,19 @@ TABLE_NAMES = {
     "customers": "customers"
 }
 
-# Nombre del schema para las tablas específicas de la colección del POC
-POC_SCHEMA_NAME = "lml_processes"
-BATCH_SIZE = 500 # Número de registros a insertar por lote
+# --- Configuración de Migración ---
+BATCH_SIZE = 500  # Número de registros a insertar por lote (balance entre memoria y velocidad)
+
+# --- Configuración Multi-Colección ---
+# Cada colección MongoDB define:
+# - postgres_schema: Nombre del schema destino en PostgreSQL
+# - primary_key: Nombre semántico de la clave primaria (ej: process_id, list_id)
+# - shared_entities: Lista de tablas en 'public' que esta colección referencia
+COLLECTIONS = {
+    "lml_processes_mesa4core": {
+        "postgres_schema": "lml_processes",
+        "primary_key": "process_id",
+        "shared_entities": ["users", "customers", "areas", "subareas", "roles", "groups"]
+    }
+    # Nuevas colecciones se agregan aquí con la misma estructura
+}
