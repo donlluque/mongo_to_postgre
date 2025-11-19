@@ -1,0 +1,773 @@
+======================================================================
+ANÁLISIS ESTRUCTURAL: lml_listbuilder_mesa4core
+======================================================================
+
+📊 Total documentos: 200
+
+CAMPOS DE PRIMER NIVEL:
+----------------------------------------------------------------------
+  __v                                 200/200 (100%)
+  _id                                 200/200 (100%)
+  aggs                                153/200 ( 76%)
+  alias                               200/200 (100%)
+  allAvailableFields                  200/200 (100%)
+  buttonLinks                         200/200 (100%)
+  createdAt                           200/200 (100%)
+  createdBy                           153/200 ( 76%)
+  customerId                          200/200 (100%)
+  fields                              200/200 (100%)
+  gqlField                            200/200 (100%)
+  gqlQuery                            200/200 (100%)
+  gqlVariables                        200/200 (100%)
+  items                               200/200 (100%)
+  itemsPerPage                         63/200 ( 31%)
+  lmModalActions                      200/200 (100%)
+  lmPathActions                       200/200 (100%)
+  lumbreInternal                      200/200 (100%)
+  lumbreVersion                        74/200 ( 37%)
+  metaSearch                           14/200 (  7%)
+  mode                                200/200 (100%)
+  modeBoxOptions                       17/200 (  8%)
+  page                                 63/200 ( 31%)
+  privileges                          152/200 ( 76%)
+  searchOnFieldsSelected              200/200 (100%)
+  searchOnFieldsToSelected            200/200 (100%)
+  selectable                           95/200 ( 47%)
+  softPermissions                      24/200 ( 12%)
+  titleList                           200/200 (100%)
+  updatedAt                           200/200 (100%)
+  updatedBy                           132/200 ( 66%)
+
+======================================================================
+ARRAYS (cardinalidad):
+----------------------------------------------------------------------
+  lmPathActions                       Avg:   0.3  Min:   0  Max:   2
+  lmModalActions                      Avg:   0.0  Min:   0  Max:   0
+  buttonLinks                         Avg:   1.0  Min:   0  Max:   2
+  fields                              Avg:   4.6  Min:   3  Max:  11
+  allAvailableFields                  Avg:   4.4  Min:   0  Max:   9
+  items                               Avg:   7.6  Min:   6  Max:  48
+  searchOnFieldsSelected              Avg:   5.9  Min:   4  Max:  24
+  searchOnFieldsToSelected            Avg:   5.5  Min:   3  Max:  23
+
+======================================================================
+BÚSQUEDA DE ENTIDADES COMPARTIDAS:
+----------------------------------------------------------------------
+  Docs con referencia a 'user': 186/200
+  Docs con referencia a 'customer': 200/200
+
+======================================================================
+DOCUMENTOS COMPLETOS (primero, medio, último):
+======================================================================
+
+[Documento 1 - Índice 0]
+{
+  "_id": {
+    "$oid": "60c0d82900088a3870b3f9de"
+  },
+  "lmPathActions": [
+    {
+      "to": "/listbuilder/view/:listbuilderId/",
+      "tooltip": " Ver",
+      "fontAwesomeIcon": "search"
+    },
+    {
+      "to": "/codificadoresbuilder/editar/:_id",
+      "tooltip": "Editar",
+      "fontAwesomeIcon": "edit"
+    }
+  ],
+  "lmModalActions": [],
+  "searchOnFieldsSelected": [
+    "codificatorName",
+    "createdAt",
+    "updatedAt",
+    "listbuilderId",
+    "actions"
+  ],
+  "searchOnFieldsToSelected": [
+    "codificatorName",
+    "createdAt",
+    "updatedAt",
+    "actions"
+  ],
+  "allAvailableFields": [
+    {
+      "key": "codificatorName",
+      "label": "Nombre",
+      "sortable": false
+    },
+    {
+      "key": "createdAt",
+      "label": "Creado",
+      "sortable": true
+    },
+    {
+      "key": "updatedAt",
+      "label": "Actualizado",
+      "sortable": true
+    },
+    {
+      "key": "listbuilderId",
+      "label": "listbuilder ID",
+      "sortable": false
+    },
+    {
+      "key": "actions",
+      "label": "Acciones",
+      "sortable": false
+    }
+  ],
+  "fields": [
+    {
+      "key": "codificatorName",
+      "label": "Nombre",
+      "sortable": false
+    },
+    {
+      "key": "createdAt",
+      "label": "Creado",
+      "sortable": true
+    },
+    {
+      "key": "updatedAt",
+      "label": "Actualizado",
+      "sortable": true
+    },
+    {
+      "key": "actions",
+      "label": "Acciones",
+      "sortable": false
+    }
+  ],
+  "buttonLinks": [
+    {
+      "value": "Nuevo",
+      "to": "/codificadoresbuilder/nuevo",
+      "endpointToValidateVisibility": "",
+      "show": true,
+      "disabled": false,
+      "buttonClass": "btn-info"
+    }
+  ],
+  "alias": "Listado Codificadores Builder Internos",
+  "titleList": "Listado Codificadores Builder Internos",
+  "gqlField": "CodificatorBuilder",
+  "gqlQuery": "query($page:Int, $q:String, $sort:[CodificatorBuilderESSortEnum]) {\n      CodificatorBuilder(\n          titleList: \"Listado Codificadores Builder Internos\"\n          q: $q\n          perPage: 10\n          page: $page\n          sort: $sort\n          metaSearch: \"*\"\n          opts: {\n            lenient: true\n          }\n          lmPathActions: [{to:\"/listbuilder/view/:listbuilderId/\",tooltip:\" Ver\",fontAwesomeIcon:\"search\"},{to:\"/codificadoresbuilder/editar/:_id\",tooltip:\"Editar\",fontAwesomeIcon:\"edit\"}]\n          lmModalActions: []\n          buttonLinks: [{value:\"Nuevo\",to:\"/codificadoresbuilder/nuevo\",endpointToValidateVisibility:\"\",show:true,disabled:false,buttonClass:\"btn-info\"}]\n\n          ) {\n          count\n          searcher\n          tableItemsTotal\n          titleList\n          table {\n            items {\n              codificatorName,createdAt,updatedAt,actions\n            }\n            fields {\n              key\n              label\n              sortable\n            }\n          }\n          buttons\n          pagination\n        }\n      }",
+  "gqlVariables": {
+    "q": "deleted: false",
+    "sort": "updatedAt__desc",
+    "page": 1
+  },
+  "items": [
+    {
+      "name": "codificatorName"
+    },
+    {
+      "name": "createdAt"
+    },
+    {
+      "name": "updatedAt"
+    },
+    {
+      "name": "listbuilderId"
+    },
+    {
+      "name": "deleted"
+    },
+    {
+      "name": "formbuilderId"
+    },
+    {
+      "name": "isChild"
+    },
+    {
+      "name": "lumbreInternal"
+    },
+    {
+      "name": "createdBy"
+    },
+    {
+      "name": "updatedBy"
+    },
+    {
+      "name": "actions"
+    }
+  ],
+  "mode": {
+    "table": true,
+    "map": false
+  },
+  "createdAt": "2021-06-09T15:03:05.737Z",
+  "updatedAt": {
+    "$date": "2021-11-02T16:24:44.016Z"
+  },
+  "__v": 0.0,
+  "softPermissions": {
+    "allowAccess": [],
+    "allowUpdate": [],
+    "allowDelete": []
+  },
+  "updatedBy": {
+    "user": {
+      "area": {
+        "name": "\u00c1rea 1",
+        "id": "60ef32cd57c5ac23d879c0fe"
+      },
+      "firstname": "Pablo",
+      "role": {
+        "name": "Superusuario",
+        "id": "60ef630756ce4b7a1bf83ea5"
+      },
+      "updated_at": "2021-07-20T15:11:27.767Z",
+      "created_at": "2021-03-22T10:41:45.517Z",
+      "id": 3,
+      "subarea": {
+        "name": "Sub\u00e1rea 1",
+        "id": "60ef335657c5ac23d879c103"
+      },
+      "position": {
+        "name": "Director",
+        "id": "60ef33bb57c5ac23d879c112"
+      },
+      "signaturetype": {
+        "name": "Electr\u00f3nica",
+        "id": "60ef33e057c5ac23d879c119"
+      },
+      "email": "pablo@lumile.com.ar",
+      "lastname": "Castillo",
+      "username": "pekastel",
+      "privileges": [
+        {
+          "id": "60ef50fb76b81943ec4d99dd",
+          "name": "Consulta",
+          "codigo_privilegio": "CONSULTA"
+        },
+        {
+          "id": "610002b551c4e81c470ad1b4",
+          "name": "Consultar Documentos",
+          "codigo_privilegio": "CONSULTADOCUMENTO"
+        },
+        {
+          "id": "61002a1a51c4e81c470ad1b6",
+          "name": "Firmar Documento",
+          "codigo_privilegio": "FIRMARDOCUMENTO"
+        },
+        {
+          "id": "61002a6651c4e81c470ad1b8",
+          "name": "Editar Documento",
+          "codigo_privilegio": "EDITARDOCUMENTO"
+        },
+        {
+          "id": "61002abe51c4e81c470ad1ba",
+          "name": "Crear Documentos",
+          "codigo_privilegio": "ALTADOCUMENTO"
+        },
+        {
+          "id": "61002b0851c4e81c470ad1bc",
+          "name": "Ver Todos los Documentos",
+          "codigo_privilegio": "CONSULTADOCUMENTOESTODOS"
+        },
+        {
+          "id": "6124f97ace97b33c66ca9474",
+          "name": "Permite administrar Usuarios",
+          "codigo_privilegio": "ADMINISTRARUSUARIOS"
+        },
+        {
+          "id": "6124f99ece97b33c66ca9476",
+          "name": "Permite administrar Codificadores",
+          "codigo_privilegio": "ADMINISTRARCODIFICACIONES"
+        },
+        {
+          "id": "6124f9d2ce97b33c66ca9478",
+          "name": "Permite administrar Formularios",
+          "codigo_privilegio": "ADMINISTRARFORMULARIOS"
+        },
+        {
+          "id": "6124f9edce97b33c66ca947a",
+          "name": "Permite administrar Templates de Mail",
+          "codigo_privilegio": "ADMINISTRARTEMPLATEMAIL"
+        },
+        {
+          "id": "6124fa09ce97b33c66ca947c",
+          "name": "Permite administrar Tipos de Documentos",
+          "codigo_privilegio": "ADMINISTRARTIPOSDOCUMENTOS"
+        },
+        {
+          "id": "6124fa38ce97b33c66ca947e",
+          "name": "Permite administrar Roles y Privilegios",
+          "codigo_privilegio": "ADMINISTRARROLESYPRIVILEGIOS"
+        },
+        {
+          "id": "6124fadfce97b33c66ca9480",
+          "name": "Permite administrar Listados",
+          "codigo_privilegio": "ADMINISTRARLISTADOS"
+        },
+        {
+          "id": "61252634ce97b33c66ca9483",
+          "name": "Permite administrar Codificadores Secundarios",
+          "codigo_privilegio": "ADMINISTRACODIFICADORESSECUNDARIOS"
+        },
+        {
+          "id": "615e1dca0e5eeb0673bc8f2e",
+          "name": "Permite administrar Documentos",
+          "codigo_privilegio": "ADMINISTRARDOCUMENTOS"
+        }
+      ]
+    },
+    "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/95.0.4638.69 Safari/537.36",
+    "userIp": "IP unknown"
+  },
+  "lumbreInternal": true,
+  "customerId": "61dc442d1bfce14854779785"
+}
+
+
+[Documento 2 - Índice 100]
+{
+  "_id": {
+    "$oid": "6185878391be4f094ce0b34d"
+  },
+  "lmPathActions": [],
+  "lmModalActions": [],
+  "searchOnFieldsSelected": [
+    "codificatorBuilderId",
+    "name",
+    "parentCodificatorId",
+    "createdAt",
+    "updatedAt",
+    "deleted"
+  ],
+  "searchOnFieldsToSelected": [
+    "codificatorBuilderId",
+    "name",
+    "parentCodificatorId",
+    "createdAt",
+    "updatedAt",
+    "deleted"
+  ],
+  "allAvailableFields": [
+    {
+      "key": "name",
+      "label": "Nombre",
+      "sortable": false
+    },
+    {
+      "key": "createdAt",
+      "label": "Creado",
+      "sortable": true
+    },
+    {
+      "key": "updatedAt",
+      "label": "Actualizado",
+      "sortable": true
+    },
+    {
+      "key": "deleted",
+      "label": "En baja l\u00f3gica",
+      "sortable": true
+    }
+  ],
+  "fields": [
+    {
+      "key": "name",
+      "label": "Nombre",
+      "sortable": false
+    },
+    {
+      "key": "createdAt",
+      "label": "Creado",
+      "sortable": true
+    },
+    {
+      "key": "updatedAt",
+      "label": "Actualizado",
+      "sortable": true
+    },
+    {
+      "key": "deleted",
+      "label": "En baja l\u00f3gica",
+      "sortable": true
+    }
+  ],
+  "buttonLinks": [
+    {
+      "value": "Volver",
+      "to": "/listbuilder/view/618585e291be4f094ce0b2e9",
+      "endpointToValidateVisibility": "",
+      "show": true,
+      "disabled": false,
+      "buttonClass": "btn-secondary"
+    }
+  ],
+  "aggs": [],
+  "lumbreInternal": true,
+  "privileges": [],
+  "alias": "dripicons-view-list",
+  "titleList": "dripicons-view-list",
+  "gqlField": "Codificator",
+  "gqlQuery": "query($page:Int, $q:String, $titleList:String!, $sort:[CodificatorESSortEnum]) { Codificator( titleList: $titleList q: $q perPage: 10 page: $page sort: $sort metaSearch: \"*\" opts: { lenient: true } lmPathActions: [] lmModalActions: [] buttonLinks: [{value:\"Volver\",to:\"618585e291be4f094ce0b2e9\",endpointToValidateVisibility:\"\",show:true,disabled:false,buttonClass:\"btn-secondary\"}] ) { count searcher tableItemsTotal titleList table { items { name,codificatorBuilderId,parentCodificatorId,createdAt,updatedAt,deleted } fields { key label sortable } } buttons pagination } }",
+  "gqlVariables": {
+    "q": "parentCodificatorId: 6185878391be4f094ce0b34c",
+    "sort": "updatedAt__desc",
+    "page": 1,
+    "titleList": "dripicons-view-list"
+  },
+  "items": [
+    {
+      "name": "name"
+    },
+    {
+      "name": "codificatorBuilderId"
+    },
+    {
+      "name": "parentCodificatorId"
+    },
+    {
+      "name": "createdAt"
+    },
+    {
+      "name": "updatedAt"
+    },
+    {
+      "name": "deleted"
+    }
+  ],
+  "mode": {
+    "table": true,
+    "map": false
+  },
+  "createdBy": {
+    "user": {
+      "area": {
+        "name": "\u00c1rea 1",
+        "id": "60ef32cd57c5ac23d879c0fe"
+      },
+      "firstname": "Pablo",
+      "role": {
+        "name": "Superusuario",
+        "id": "60ef630756ce4b7a1bf83ea5"
+      },
+      "updated_at": "2021-07-20T15:11:27.767Z",
+      "created_at": "2021-03-22T10:41:45.517Z",
+      "id": 3,
+      "subarea": {
+        "name": "Sub\u00e1rea 1",
+        "id": "60ef335657c5ac23d879c103"
+      },
+      "position": {
+        "name": "Director",
+        "id": "60ef33bb57c5ac23d879c112"
+      },
+      "signaturetype": {
+        "name": "Electr\u00f3nica",
+        "id": "60ef33e057c5ac23d879c119"
+      },
+      "email": "pablo@lumile.com.ar",
+      "lastname": "Castillo",
+      "username": "pekastel",
+      "privileges": [
+        {
+          "id": "60ef50fb76b81943ec4d99dd",
+          "name": "Consulta",
+          "codigo_privilegio": "CONSULTA"
+        },
+        {
+          "id": "610002b551c4e81c470ad1b4",
+          "name": "Consultar Documentos",
+          "codigo_privilegio": "CONSULTADOCUMENTO"
+        },
+        {
+          "id": "61002a1a51c4e81c470ad1b6",
+          "name": "Firmar Documento",
+          "codigo_privilegio": "FIRMARDOCUMENTO"
+        },
+        {
+          "id": "61002a6651c4e81c470ad1b8",
+          "name": "Editar Documento",
+          "codigo_privilegio": "EDITARDOCUMENTO"
+        },
+        {
+          "id": "61002abe51c4e81c470ad1ba",
+          "name": "Crear Documentos",
+          "codigo_privilegio": "ALTADOCUMENTO"
+        },
+        {
+          "id": "61002b0851c4e81c470ad1bc",
+          "name": "Ver Todos los Documentos",
+          "codigo_privilegio": "CONSULTADOCUMENTOESTODOS"
+        },
+        {
+          "id": "6124f97ace97b33c66ca9474",
+          "name": "Permite administrar Usuarios",
+          "codigo_privilegio": "ADMINISTRARUSUARIOS"
+        },
+        {
+          "id": "6124f99ece97b33c66ca9476",
+          "name": "Permite administrar Codificadores",
+          "codigo_privilegio": "ADMINISTRARCODIFICACIONES"
+        },
+        {
+          "id": "6124f9d2ce97b33c66ca9478",
+          "name": "Permite administrar Formularios",
+          "codigo_privilegio": "ADMINISTRARFORMULARIOS"
+        },
+        {
+          "id": "6124f9edce97b33c66ca947a",
+          "name": "Permite administrar Templates de Mail",
+          "codigo_privilegio": "ADMINISTRARTEMPLATEMAIL"
+        },
+        {
+          "id": "6124fa09ce97b33c66ca947c",
+          "name": "Permite administrar Tipos de Documentos",
+          "codigo_privilegio": "ADMINISTRARTIPOSDOCUMENTOS"
+        },
+        {
+          "id": "6124fa38ce97b33c66ca947e",
+          "name": "Permite administrar Roles y Privilegios",
+          "codigo_privilegio": "ADMINISTRARROLESYPRIVILEGIOS"
+        },
+        {
+          "id": "6124fadfce97b33c66ca9480",
+          "name": "Permite administrar Listados",
+          "codigo_privilegio": "ADMINISTRARLISTADOS"
+        },
+        {
+          "id": "61252634ce97b33c66ca9483",
+          "name": "Permite administrar Codificadores Secundarios",
+          "codigo_privilegio": "ADMINISTRACODIFICADORESSECUNDARIOS"
+        },
+        {
+          "id": "615e1dca0e5eeb0673bc8f2e",
+          "name": "Permite administrar Documentos",
+          "codigo_privilegio": "ADMINISTRARDOCUMENTOS"
+        }
+      ]
+    },
+    "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/95.0.4638.69 Safari/537.36",
+    "userIp": "IP unknown"
+  },
+  "createdAt": {
+    "$date": "2021-11-05T19:35:31.288Z"
+  },
+  "updatedAt": {
+    "$date": "2021-11-05T19:35:31.288Z"
+  },
+  "__v": 0,
+  "customerId": "61dc442d1bfce14854779785"
+}
+
+
+[Documento 3 - Índice 199]
+{
+  "_id": {
+    "$oid": "6298c073b696620016033087"
+  },
+  "lmPathActions": [],
+  "lmModalActions": [],
+  "searchOnFieldsSelected": [
+    "name",
+    "createdAt",
+    "updatedAt",
+    "deleted"
+  ],
+  "searchOnFieldsToSelected": [
+    "name",
+    "createdAt",
+    "updatedAt",
+    "deleted"
+  ],
+  "allAvailableFields": [
+    {
+      "key": "name",
+      "label": "Nombre",
+      "sortable": false
+    },
+    {
+      "key": "createdAt",
+      "label": "Creado",
+      "sortable": true
+    },
+    {
+      "key": "updatedAt",
+      "label": "Actualizado",
+      "sortable": true
+    },
+    {
+      "key": "deleted",
+      "label": "En baja l\u00f3gica",
+      "sortable": true
+    }
+  ],
+  "fields": [
+    {
+      "key": "name",
+      "label": "Nombre",
+      "sortable": false
+    },
+    {
+      "key": "createdAt",
+      "label": "Creado",
+      "sortable": true
+    },
+    {
+      "key": "updatedAt",
+      "label": "Actualizado",
+      "sortable": true
+    },
+    {
+      "key": "deleted",
+      "label": "En baja l\u00f3gica",
+      "sortable": true
+    }
+  ],
+  "buttonLinks": [
+    {
+      "value": "Volver",
+      "to": "/listbuilder/view/60ef334457c5ac23d879c102",
+      "endpointToValidateVisibility": "",
+      "show": true,
+      "disabled": false,
+      "buttonClass": "btn-secondary"
+    }
+  ],
+  "aggs": [],
+  "lumbreInternal": true,
+  "selectable": false,
+  "privileges": [],
+  "lumbreVersion": 1,
+  "itemsPerPage": 10,
+  "page": 1,
+  "alias": "GESTION DE COBRANZAS",
+  "titleList": "GESTION DE COBRANZAS",
+  "gqlField": "CustomerCodificator",
+  "gqlQuery": "query($page:Int, $q:String, $titleList:String!, $sort:[CustomerCodificatorESSortEnum]) { CustomerCodificator( titleList: $titleList q: $q perPage: 10 page: $page sort: $sort metaSearch: \"*\" opts: { lenient: true } lmPathActions: [] lmModalActions: [] buttonLinks: [{value:\"Volver\",to:\"60ef334457c5ac23d879c102\",endpointToValidateVisibility:\"\",show:true,disabled:false,buttonClass:\"btn-secondary\"}] ) { count searcher tableItemsTotal titleList table { items { name,createdAt,updatedAt,deleted } fields { key label sortable } } buttons pagination } }",
+  "gqlVariables": {
+    "q": "id: (6298c062b696620016032ee9)",
+    "sort": "updatedAt__desc",
+    "page": 1,
+    "titleList": "GESTION DE COBRANZAS"
+  },
+  "items": [
+    {
+      "name": "name"
+    },
+    {
+      "name": "codificatorBuilderId"
+    },
+    {
+      "name": "parentCodificatorId"
+    },
+    {
+      "name": "createdAt"
+    },
+    {
+      "name": "updatedAt"
+    },
+    {
+      "name": "deleted"
+    }
+  ],
+  "mode": {
+    "table": true,
+    "map": false
+  },
+  "createdBy": {
+    "user": {
+      "customerId": "61dc442d1bfce14854779785"
+    },
+    "userAgent": "",
+    "userIp": ""
+  },
+  "updatedBy": {
+    "user": {
+      "area": {
+        "name": "GOBIERNO Y LEGAL Y TECNICA",
+        "id": "6298c062b696620016032efe"
+      },
+      "firstname": "Natalia",
+      "role": {
+        "name": "Administrador",
+        "id": "60ef337557c5ac23d879c108"
+      },
+      "signature": null,
+      "subarea": {
+        "name": "DELEGACION VILLA ADELINA",
+        "id": "6298c076b6966200160331cd"
+      },
+      "inCharacterOf": null,
+      "lastname": "Martin",
+      "createdAt": "2022-11-02T13:46:09.280Z",
+      "deleted": false,
+      "licenseStatus": "finished",
+      "customerId": "61dc442d1bfce14854779785",
+      "customers": [],
+      "userType": "internal",
+      "id": "636274a10d824b0013e70d1e",
+      "dni": null,
+      "email": "natalia.martin@vicentelopez.gov.ar",
+      "updatedAt": "2024-05-16T18:05:16.582Z",
+      "groups": [
+        {
+          "name": "Mesa Servicios Generales - Hospital Houssay",
+          "id": "62bb478728ae05001386fff5"
+        },
+        {
+          "name": "Mesa Digital",
+          "id": "62be4ab749ad5a0014816a24"
+        },
+        {
+          "name": "Grupo para modificar en \"APP -MESA-DIGITAL\"",
+          "id": "6414e97b6794030013126851"
+        },
+        {
+          "name": "Mesa Compensaciones - Sec. Recursos Humanos",
+          "id": "62cdc6b10fd1a8001355833a"
+        }
+      ],
+      "reviewersgroups": [
+        {
+          "name": "Visado Pruebas",
+          "id": "65955e5275f8b00013759e2a"
+        }
+      ],
+      "profilegroups": [
+        {
+          "name": "Contratos MGE",
+          "id": "659d955a5e71f1001339a89f"
+        },
+        {
+          "name": "Arbolado - Identidad Digital",
+          "id": "6570e8072c9314001a8f9053"
+        },
+        {
+          "name": "HCD",
+          "id": "664508d7697521001aafcabc"
+        },
+        {
+          "name": "Contratos",
+          "id": "65917b4e8f7f90001d9adc18"
+        }
+      ],
+      "plan": null,
+      "_id": "636274a10d824b0013e70d1e"
+    },
+    "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+    "userIp": "IP unknown"
+  },
+  "customerId": "61dc442d1bfce14854779785",
+  "createdAt": {
+    "$date": "2022-06-02T13:51:47.199Z"
+  },
+  "updatedAt": {
+    "$date": "2024-05-20T13:05:19.603Z"
+  },
+  "__v": 0
+}
+
+======================================================================
+VALORES ÚNICOS EN CAMPOS CLAVE:
+----------------------------------------------------------------------
+  alias                191 valores únicos
+  titleList            191 valores únicos
+  gqlField             21 valores únicos

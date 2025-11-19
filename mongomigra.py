@@ -1,63 +1,60 @@
 r"""
 Script principal de migración de colecciones MongoDB a PostgreSQL.
 
-Este script orquesta el proceso de migración de datos desde MongoDB hacia
-PostgreSQL. La lógica específica de transformación está delegada a módulos
-en el paquete 'migrators/', permitiendo migrar múltiples colecciones con
-diferentes estructuras.
+Arquitectura refactorizada con carga dinámica de migradores:
+- mongomigra.py: Infraestructura genérica (conexiones, batching, progreso)
+- migrators/*.py: Lógica específica por colección (implementan BaseMigrator)
+- config.py: Configuración centralizada de colecciones
 
-Arquitectura:
-- mongomigra.py: Infraestructura (conexiones, batching, progreso)
-- migrators/*.py: Lógica de transformación específica por colección
+Flujo de ejecución:
+1. Usuario selecciona colección del menú interactivo
+2. Sistema carga dinámicamente el migrador correspondiente
+3. Iteración sobre documentos MongoDB en batches
+4. Extracción via interfaz común (extract_data)
+5. Inserción via interfaz común (insert_batches)
 
-Flujo de Ejecución:
-1. Conectar a MongoDB y PostgreSQL
-2. Cargar módulo migrador específico (migrators/lml_processes.py)
-3. Iterar sobre documentos en batches
-4. Extraer entidades compartidas (public.*)
-5. Extraer datos específicos (schema específico)
-6. Insertar en batches y commit
+Ventajas vs versión anterior:
+- Agregar nueva colección no requiere modificar este archivo
+- Un solo código funciona con N colecciones
+- Validación automática de migradores via interfaz
 
 Prerrequisitos:
 - Base de datos creada (mesamongo)
 - Estructura de tablas creada (ejecutar dbsetup.py primero)
+- Migradores implementados en migrators/
 
 Uso:
     python mongomigra.py
     
-    # Verificar migración
-    psql -d mesamongo -c "SELECT COUNT(*) FROM lml_processes.main;"
-
-Optimizaciones:
-- Batch processing: Inserciones de 500 registros por commit
-- Caché en memoria: Evita procesamiento redundante de entidades compartidas
-- Cursor sin timeout: Soporta migraciones de larga duración
+    # Seleccionar colección del menú interactivo
+    # El resto es automático
 """
 
 import sys
+import io
+import importlib
 import psycopg2
 from pymongo import MongoClient, CursorType
 from pymongo.errors import ConnectionFailure
 from psycopg2 import OperationalError, ProgrammingError
 
 import config
-from migrators import lml_processes as migrator
+from migrators.base import BaseMigrator
+
+# Forzar UTF-8 en stdout/stderr para emojis en Windows
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 
 
 def connect_to_mongo():
     """
     Establece conexión a MongoDB usando credenciales de config.py.
     
-    Configuración:
-    - Timeout de selección de servidor: 5 segundos
-    - Ping inicial para validar conexión
-    
     Returns:
         Database: Objeto de base de datos de pymongo
         
     Raises:
-        ConnectionFailure: Si no puede conectar a MongoDB
-        SystemExit: Termina el programa con código 1
+        SystemExit: Si no puede conectar
     """
     try:
         print("🔌 Conectando a MongoDB...")
@@ -80,8 +77,7 @@ def connect_to_postgres():
         tuple: (conexión, cursor) de psycopg2
         
     Raises:
-        OperationalError: Si no puede conectar a PostgreSQL
-        SystemExit: Termina el programa con código 1
+        SystemExit: Si no puede conectar
     """
     try:
         print("🔌 Conectando a PostgreSQL...")
@@ -95,22 +91,138 @@ def connect_to_postgres():
         sys.exit(1)
 
 
+def load_migrator_for_collection(collection_name):
+    """
+    Carga dinámicamente el migrador correspondiente a una colección.
+    
+    Convención de nombres:
+        lml_processes_mesa4core → migrators.lml_processes → LMLProcessesMigrator
+        lml_listbuilder_mesa4core → migrators.lml_listbuilder → LMLListbuilderMigrator
+    
+    El sistema:
+    1. Extrae nombre base (lml_processes_mesa4core → lml_processes)
+    2. Construye nombre de clase en PascalCase (lml_processes → LMLProcessesMigrator)
+    3. Importa módulo dinámicamente
+    4. Instancia clase con schema de config
+    
+    Args:
+        collection_name: Nombre completo de la colección en MongoDB
+        
+    Returns:
+        BaseMigrator: Instancia del migrador específico
+        
+    Raises:
+        SystemExit: Si no existe el módulo o la clase
+    
+    Example:
+        >>> migrator = load_migrator_for_collection('lml_processes_mesa4core')
+        >>> type(migrator).__name__
+        'LMLProcessesMigrator'
+    """
+    # Extraer nombre base
+    base_name = collection_name.replace('_mesa4core', '')
+    
+    # Construir nombre de clase: lml_processes → LMLProcessesMigrator
+    # Split por '_', capitalizar cada palabra, concatenar
+    class_name = ''.join(word.capitalize() for word in base_name.split('_')) + 'Migrator'
+    
+    try:
+        # Importar módulo dinámicamente
+        module = importlib.import_module(f'migrators.{base_name}')
+        
+        # Obtener clase del módulo
+        migrator_class = getattr(module, class_name)
+        
+        # Verificar que hereda de BaseMigrator (type safety en runtime)
+        if not issubclass(migrator_class, BaseMigrator):
+            print(f"❌ {class_name} no hereda de BaseMigrator", file=sys.stderr)
+            sys.exit(1)
+        
+        # Obtener schema de config
+        schema = config.COLLECTIONS[collection_name]['postgres_schema']
+        
+        # Instanciar
+        return migrator_class(schema=schema)
+        
+    except ModuleNotFoundError:
+        print(f"❌ No existe migrador para '{collection_name}'", file=sys.stderr)
+        print(f"   Se esperaba: migrators/{base_name}.py", file=sys.stderr)
+        sys.exit(1)
+    except AttributeError:
+        print(f"❌ El módulo migrators.{base_name} no tiene la clase '{class_name}'", file=sys.stderr)
+        sys.exit(1)
+
+
+def select_collection():
+    """
+    Muestra menú interactivo para seleccionar colección a migrar.
+    
+    Lee colecciones de config.COLLECTIONS y presenta información relevante:
+    - Nombre completo de la colección
+    - Descripción (si existe)
+    - Schema destino
+    - Primary key
+    
+    Returns:
+        str: Nombre de la colección seleccionada
+        
+    Raises:
+        SystemExit: Si no hay colecciones configuradas o usuario cancela
+    """
+    available = list(config.COLLECTIONS.keys())
+    
+    if not available:
+        print("❌ No hay colecciones configuradas en config.COLLECTIONS")
+        sys.exit(1)
+    
+    print("\n" + "=" * 70)
+    print("📚 COLECCIONES DISPONIBLES")
+    print("=" * 70)
+    
+    for i, coll_name in enumerate(available, 1):
+        coll_config = config.COLLECTIONS[coll_name]
+        desc = coll_config.get('description', 'Sin descripción')
+        schema = coll_config['postgres_schema']
+        pk = coll_config['primary_key']
+        
+        print(f"\n{i}. {coll_name}")
+        print(f"   └─ {desc}")
+        print(f"   └─ Schema: {schema} | PK: {pk}")
+    
+    print("\n" + "=" * 70)
+    
+    # Loop hasta obtener selección válida
+    while True:
+        try:
+            choice = input("Seleccione el número de colección a migrar: ").strip()
+            idx = int(choice) - 1
+            
+            if 0 <= idx < len(available):
+                return available[idx]
+            else:
+                print("❌ Número fuera de rango. Intente nuevamente.")
+        except ValueError:
+            print("❌ Entrada inválida. Ingrese un número.")
+        except (KeyboardInterrupt, EOFError):
+            print("\n\n👋 Migración cancelada por usuario")
+            sys.exit(0)
+
+
 def migrate_collection(mongo_db, pg_cursor, pg_conn, collection_name):
     """
-    Orquesta la migración de una colección específica.
+    Orquesta la migración de una colección específica usando carga dinámica.
     
-    Esta función maneja:
-    - Iteración sobre documentos de MongoDB
-    - Acumulación de registros en batches
-    - Coordinación con el módulo migrador específico
-    - Commits periódicos a PostgreSQL
-    - Reporte de progreso
+    Esta función es completamente genérica: funciona con cualquier colección
+    que tenga un migrador implementando BaseMigrator.
     
-    El patrón de procesamiento es:
-        Para cada documento:
-            1. Extraer entidades compartidas → INSERT en public.*
-            2. Extraer datos específicos → Acumular en batches
-            3. Cada N documentos → executemany() + commit
+    Flujo:
+    1. Cargar migrador específico (carga dinámica)
+    2. Inicializar estructuras (batches, cachés)
+    3. Iterar sobre documentos de MongoDB
+    4. Extraer datos usando interfaz común (extract_data)
+    5. Acumular en batches
+    6. Insertar periódicamente (insert_batches)
+    7. Commit cada batch_size documentos
     
     Args:
         mongo_db: Base de datos de pymongo
@@ -119,118 +231,119 @@ def migrate_collection(mongo_db, pg_cursor, pg_conn, collection_name):
         collection_name: Nombre de la colección a migrar
         
     Raises:
-        KeyError: Si collection_name no existe en config.COLLECTIONS
+        SystemExit: Si la colección no está configurada
     """
     print(f"\n🚚 Iniciando migración de colección '{collection_name}'...")
     
-    # Validar que la colección esté configurada
+    # Validar configuración
     if collection_name not in config.COLLECTIONS:
-        print(f"❌ Colección '{collection_name}' no encontrada en config.COLLECTIONS", file=sys.stderr)
+        print(f"❌ Colección '{collection_name}' no configurada en config.COLLECTIONS", file=sys.stderr)
         sys.exit(1)
     
     collection_config = config.COLLECTIONS[collection_name]
-    schema = collection_config['postgres_schema']
+    
+    # ========================================================================
+    # PASO 1: CARGAR MIGRADOR DINÁMICAMENTE Y FULL REFRESH
+    # ========================================================================
+    
+    print(f"   📦 Cargando migrador...")
+    migrator = load_migrator_for_collection(collection_name)
+    print(f"   ✅ Migrador cargado: {type(migrator).__name__}")
+
+    # Limpiar datos existentes (Full Refresh)
+    print(f"\n   🗑️  Limpiando datos existentes en '{collection_config['postgres_schema']}'...")
+    try:
+        pg_cursor.execute(f"TRUNCATE TABLE {collection_config['postgres_schema']}.main CASCADE")
+        pg_conn.commit()
+        print(f"   ✅ Tablas limpiadas")
+    except Exception as e:
+        print(f"   ⚠️  No se pudo limpiar (puede ser primera ejecución): {e}")
+    
+    # ========================================================================
+    # PASO 2: OBTENER COLECCIÓN DE MONGODB
+    # ========================================================================
     
     source_collection = mongo_db[collection_name]
     batch_size = config.BATCH_SIZE
     
-    # Contar documentos totales
     total_docs = source_collection.count_documents({})
     if total_docs == 0:
         print(f"⚠️  Advertencia: No se encontraron documentos en '{collection_name}'")
         return
     
-    print(f"   📊 Total de documentos: {total_docs:,}")
+    print(f"\n   📊 Total de documentos: {total_docs:,}")
     print(f"   📦 Tamaño de batch: {batch_size}")
-    print(f"   🎯 Schema destino: {schema}")
+    print(f"   🎯 Schema destino: {collection_config['postgres_schema']}")
     
-    # Inicializar cachés para evitar procesamiento redundante
-    caches = {
-        'users': set(),
-        'areas': set(),
-        'subareas': set(),
-        'roles': set(),
-        'groups': set(),
-        'customers': set()
-    }
+    # ========================================================================
+    # PASO 3: INICIALIZAR ESTRUCTURAS
+    # ========================================================================
     
-    # Inicializar batches acumuladores
-    main_batch = []
-    movements_batch = []
-    initiator_fields_batch = []
-    documents_batch = []
-    last_movements_batch = []
+    # Cachés para entidades compartidas (evitar INSERTs redundantes)
+    # Solo cachear las entidades que esta colección usa
+    caches = {entity: set() for entity in collection_config['shared_entities']}
+    
+    # Batches usando la interfaz del migrador
+    batches = migrator.initialize_batches()
+    
+    # ========================================================================
+    # PASO 4: ITERAR SOBRE DOCUMENTOS
+    # ========================================================================
     
     # Cursor sin timeout para migraciones largas (>30 min)
-    documents_to_migrate = source_collection.find(
-        cursor_type=CursorType.NON_TAILABLE
-    )
+    documents = source_collection.find(cursor_type=CursorType.NON_TAILABLE)
     count = 0
     
     try:
-        for doc in documents_to_migrate:
+        for doc in documents:
             count += 1
-            process_id = str(doc.get('_id'))
             
-            # PASO 1: Extraer y procesar entidades compartidas
-            # Esto inserta directamente en public.* usando ON CONFLICT
+            # PASO 4.1: Procesar entidades compartidas (public.*)
+            # Inserta directamente en PostgreSQL usando ON CONFLICT
             shared_entities = migrator.extract_shared_entities(doc, pg_cursor, caches)
             
-            # PASO 2: Extraer datos específicos (acumular en batches)
-            main_batch.append(migrator.extract_main_record(doc, shared_entities))
-            movements_batch.extend(migrator.extract_movements(doc, process_id))
-            initiator_fields_batch.extend(migrator.extract_initiator_fields(doc, process_id))
-            documents_batch.extend(migrator.extract_documents(doc, process_id))
+            # PASO 4.2: Extraer datos específicos de la colección
+            # Retorna estructura {'main': tuple, 'related': {...}}
+            data = migrator.extract_data(doc, shared_entities)
             
-            last_movement = migrator.extract_last_movement(doc, process_id)
-            if last_movement:
-                last_movements_batch.append(last_movement)
+            # PASO 4.3: Acumular en batches
+            batches['main'].append(data['main'])
+            for table_name, records in data['related'].items():
+                batches['related'][table_name].extend(records)
             
-            # Mostrar progreso en la misma línea
+            # Progreso en la misma línea
             if count % 100 == 0 or count % batch_size == 0:
                 print(f"\r   ⏳ Procesados: {count:,}/{total_docs:,} ({count*100//total_docs}%)", end="", flush=True)
             
-            # PASO 3: Insertar y commit cada N documentos
+            # PASO 4.4: Insertar y commit cada batch_size documentos
             if count % batch_size == 0:
-                migrator.insert_main_batch(main_batch, pg_cursor, schema)
-                migrator.insert_movements_batch(movements_batch, pg_cursor, schema)
-                migrator.insert_initiator_fields_batch(initiator_fields_batch, pg_cursor, schema)
-                migrator.insert_documents_batch(documents_batch, pg_cursor, schema)
-                migrator.insert_last_movements_batch(last_movements_batch, pg_cursor, schema)
-                
+                migrator.insert_batches(batches, pg_cursor)
                 pg_conn.commit()
                 
                 # Limpiar batches para el próximo ciclo
-                main_batch = []
-                movements_batch = []
-                initiator_fields_batch = []
-                documents_batch = []
-                last_movements_batch = []
+                batches = migrator.initialize_batches()
         
-        # PASO 4: Insertar registros finales (si count no es múltiplo exacto de batch_size)
+        # ========================================================================
+        # PASO 5: INSERTAR REGISTROS FINALES
+        # ========================================================================
+        
         print("\n   💾 Insertando registros finales...")
-        migrator.insert_main_batch(main_batch, pg_cursor, schema)
-        migrator.insert_movements_batch(movements_batch, pg_cursor, schema)
-        migrator.insert_initiator_fields_batch(initiator_fields_batch, pg_cursor, schema)
-        migrator.insert_documents_batch(documents_batch, pg_cursor, schema)
-        migrator.insert_last_movements_batch(last_movements_batch, pg_cursor, schema)
-        
+        migrator.insert_batches(batches, pg_cursor)
         pg_conn.commit()
         
         print(f"\n✅ Migración completada: {count:,} documentos procesados")
         
-        # Reporte de entidades compartidas procesadas
+        # ========================================================================
+        # PASO 6: REPORTE DE ENTIDADES COMPARTIDAS
+        # ========================================================================
+        
         print(f"\n📋 Resumen de entidades compartidas:")
-        print(f"   👥 Usuarios: {len(caches['users']):,}")
-        print(f"   🏢 Áreas: {len(caches['areas']):,}")
-        print(f"   📁 Subareas: {len(caches['subareas']):,}")
-        print(f"   🎭 Roles: {len(caches['roles']):,}")
-        print(f"   👪 Grupos: {len(caches['groups']):,}")
-        print(f"   🏪 Clientes: {len(caches['customers']):,}")
+        for entity in collection_config['shared_entities']:
+            print(f"   {entity}: {len(caches[entity]):,}")
         
     finally:
         # Cerrar cursor de MongoDB para liberar recursos
-        documents_to_migrate.close()
+        documents.close()
 
 
 def main():
@@ -238,9 +351,11 @@ def main():
     Función principal que coordina el flujo completo de migración.
     
     Secuencia:
-    1. Conectar a ambas bases de datos
-    2. Ejecutar migración de colección configurada
-    3. Cerrar conexiones limpiamente
+    1. Mostrar banner
+    2. Conectar a ambas bases de datos
+    3. Selección interactiva de colección
+    4. Ejecutar migración
+    5. Cerrar conexiones limpiamente
     
     Exit Codes:
         0: Éxito
@@ -251,15 +366,20 @@ def main():
     print("=" * 70)
     print(f"📍 MongoDB: {config.MONGO_DATABASE_NAME}")
     print(f"📍 PostgreSQL: {config.POSTGRES_CONFIG['dbname']}")
+    
+    # Selección interactiva de colección
+    collection_name = select_collection()
+    
+    print("\n" + "=" * 70)
+    print(f"📦 Colección seleccionada: {collection_name}")
     print("=" * 70)
     
-    # Por ahora migramos solo lml_processes, después será parametrizable
-    collection_name = "lml_processes_mesa4core"
-    
+    # Conectar a bases de datos
     mongo_db = connect_to_mongo()
     pg_conn, pg_cursor = connect_to_postgres()
     
     try:
+        # Ejecutar migración
         migrate_collection(mongo_db, pg_cursor, pg_conn, collection_name)
         
         print("\n" + "=" * 70)
@@ -268,6 +388,8 @@ def main():
         
     except Exception as e:
         print(f"\n❌ Error durante la migración: {e}", file=sys.stderr)
+        import traceback
+        traceback.print_exc()
         pg_conn.rollback()
         sys.exit(1)
         

@@ -123,7 +123,7 @@ def setup_shared_tables(cursor, conn):
         cursor.execute(f"""
             CREATE TABLE IF NOT EXISTS public.{tables['users']} (
                 id VARCHAR(255) PRIMARY KEY,
-                email VARCHAR(255) UNIQUE,
+                email VARCHAR(255),
                 firstname VARCHAR(255),
                 lastname VARCHAR(255),
                 area_id VARCHAR(255) REFERENCES public.{tables['areas']}(id),
@@ -260,6 +260,209 @@ def setup_lml_processes_schema(cursor, conn):
         sys.exit(1)
 
 
+def setup_lml_listbuilder_schema(cursor, conn):
+    """
+    Configura el schema lml_listbuilder para almacenar configuraciones de UI.
+    
+    Este schema almacena metadata de cómo se muestran las pantallas de listados
+    en el frontend. A diferencia de lml_processes (datos transaccionales), estos
+    son datos de configuración relativamente estáticos.
+    
+    Características:
+    - Volumen bajo (~200 configuraciones)
+    - Alta normalización (arrays pequeños → tablas relacionadas)
+    - Versionamiento via created_at/updated_at
+    """
+    tables = config.TABLE_NAMES
+    
+    print("   📋 Creando schema lml_listbuilder...")
+    
+    # Schema
+    cursor.execute("CREATE SCHEMA IF NOT EXISTS lml_listbuilder;")
+    
+    # Tabla principal
+    cursor.execute(f"""
+        CREATE TABLE IF NOT EXISTS lml_listbuilder.main (
+            listbuilder_id VARCHAR(255) PRIMARY KEY,
+            
+            -- Identificadores de la configuración
+            alias VARCHAR(500),
+            title_list VARCHAR(500),
+            gql_field VARCHAR(255),
+            
+            -- Query GraphQL
+            gql_query TEXT,
+            gql_variables JSONB,
+            
+            -- Configuración de visualización
+            mode_table BOOLEAN DEFAULT true,
+            mode_map BOOLEAN DEFAULT false,
+            
+            -- Metadata
+            lumbre_internal BOOLEAN DEFAULT false,
+            lumbre_version INTEGER,
+            selectable BOOLEAN,
+            items_per_page INTEGER,
+            page INTEGER,
+            
+            -- Permisos (JSONB porque estructura variable)
+            soft_permissions JSONB,
+            aggs JSONB,
+            meta_search JSONB,
+            mode_box_options JSONB,
+            
+            -- Auditoría
+            created_at TIMESTAMP,
+            updated_at TIMESTAMP,
+            created_by_user_id VARCHAR(255) REFERENCES public.{tables['users']}(id),
+            updated_by_user_id VARCHAR(255) REFERENCES public.{tables['users']}(id),
+            
+            -- Relación con customer
+            customer_id VARCHAR(255) REFERENCES public.{tables['customers']}(id),
+            
+            -- Metadata de MongoDB
+            mongo_version INTEGER
+        );
+    """)
+    
+    # Índices en main
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_listbuilder_gql_field 
+        ON lml_listbuilder.main(gql_field);
+        
+        CREATE INDEX IF NOT EXISTS idx_listbuilder_customer 
+        ON lml_listbuilder.main(customer_id);
+        
+        CREATE INDEX IF NOT EXISTS idx_listbuilder_alias 
+        ON lml_listbuilder.main(alias);
+    """)
+    
+    # Tabla: fields (columnas visibles en la tabla)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS lml_listbuilder.fields (
+            id SERIAL PRIMARY KEY,
+            listbuilder_id VARCHAR(255) REFERENCES lml_listbuilder.main(listbuilder_id) ON DELETE CASCADE,
+            
+            field_key VARCHAR(255),
+            field_label VARCHAR(255),
+            sortable BOOLEAN DEFAULT false,
+            
+            -- Orden de aparición
+            field_order INTEGER,
+            
+            UNIQUE(listbuilder_id, field_key, field_order)
+        );
+    """)
+    
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_fields_listbuilder 
+        ON lml_listbuilder.fields(listbuilder_id);
+    """)
+    
+    # Tabla: available_fields (todos los campos disponibles)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS lml_listbuilder.available_fields (
+            id SERIAL PRIMARY KEY,
+            listbuilder_id VARCHAR(255) REFERENCES lml_listbuilder.main(listbuilder_id) ON DELETE CASCADE,
+            
+            field_key VARCHAR(255),
+            field_label VARCHAR(255),
+            sortable BOOLEAN DEFAULT false,
+            
+            field_order INTEGER,
+            
+            UNIQUE(listbuilder_id, field_key, field_order)
+        );
+    """)
+    
+    # Tabla: items (lista de items que se pueden mostrar)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS lml_listbuilder.items (
+            id SERIAL PRIMARY KEY,
+            listbuilder_id VARCHAR(255) REFERENCES lml_listbuilder.main(listbuilder_id) ON DELETE CASCADE,
+            
+            item_name VARCHAR(255),
+            item_order INTEGER,
+            
+            UNIQUE(listbuilder_id, item_name)
+        );
+    """)
+    
+    # Tabla: button_links (botones de acción)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS lml_listbuilder.button_links (
+            id SERIAL PRIMARY KEY,
+            listbuilder_id VARCHAR(255) REFERENCES lml_listbuilder.main(listbuilder_id) ON DELETE CASCADE,
+            
+            button_value VARCHAR(255),
+            button_to VARCHAR(500),
+            button_class VARCHAR(100),
+            endpoint_to_validate_visibility VARCHAR(500),
+            show_button BOOLEAN DEFAULT true,
+            disabled BOOLEAN DEFAULT false,
+            
+            button_order INTEGER
+        );
+    """)
+    
+    # Tabla: path_actions (acciones de navegación)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS lml_listbuilder.path_actions (
+            id SERIAL PRIMARY KEY,
+            listbuilder_id VARCHAR(255) REFERENCES lml_listbuilder.main(listbuilder_id) ON DELETE CASCADE,
+            
+            action_to VARCHAR(500),
+            tooltip VARCHAR(255),
+            font_awesome_icon VARCHAR(100),
+            
+            action_order INTEGER
+        );
+    """)
+    
+    # Tabla: search_fields_selected
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS lml_listbuilder.search_fields_selected (
+            id SERIAL PRIMARY KEY,
+            listbuilder_id VARCHAR(255) REFERENCES lml_listbuilder.main(listbuilder_id) ON DELETE CASCADE,
+            
+            field_name VARCHAR(255),
+            field_order INTEGER,
+            
+            UNIQUE(listbuilder_id, field_name)
+        );
+    """)
+    
+    # Tabla: search_fields_to_selected
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS lml_listbuilder.search_fields_to_selected (
+            id SERIAL PRIMARY KEY,
+            listbuilder_id VARCHAR(255) REFERENCES lml_listbuilder.main(listbuilder_id) ON DELETE CASCADE,
+            
+            field_name VARCHAR(255),
+            field_order INTEGER,
+            
+            UNIQUE(listbuilder_id, field_name)
+        );
+    """)
+    
+    # Tabla: privileges (privilegios requeridos para acceder)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS lml_listbuilder.privileges (
+            id SERIAL PRIMARY KEY,
+            listbuilder_id VARCHAR(255) REFERENCES lml_listbuilder.main(listbuilder_id) ON DELETE CASCADE,
+            
+            privilege_id VARCHAR(255),
+            privilege_name VARCHAR(255),
+            privilege_code VARCHAR(100),
+            
+            UNIQUE(listbuilder_id, privilege_id)
+        );
+    """)
+    
+    conn.commit()
+    print("   ✅ Schema lml_listbuilder configurado (9 tablas)")
+
+
 def main():
     """
     Función principal que orquesta la creación de toda la estructura.
@@ -279,8 +482,11 @@ def main():
         # Paso 1: Tablas compartidas
         setup_shared_tables(cursor, conn)
         
-        # Paso 2: Schemas específicos
+        # Paso 2: Schema lml_processes
         setup_lml_processes_schema(cursor, conn)
+        
+        # Paso 3: Schema lml_listbuilder
+        setup_lml_listbuilder_schema(cursor, conn)
         
         print("\n" + "="*60)
         print("✅ SETUP COMPLETO")

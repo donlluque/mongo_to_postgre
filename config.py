@@ -58,7 +58,7 @@ TABLE_NAMES = {
 }
 
 # --- Configuración de Migración ---
-BATCH_SIZE = 500  # Número de registros a insertar por lote (balance entre memoria y velocidad)
+BATCH_SIZE = 2000  # Número de registros a insertar por lote (balance entre memoria y velocidad)
 
 # --- Configuración Multi-Colección ---
 # Cada colección MongoDB define:
@@ -69,7 +69,13 @@ COLLECTIONS = {
     "lml_processes_mesa4core": {
         "postgres_schema": "lml_processes",
         "primary_key": "process_id",
-        "shared_entities": ["users", "customers", "areas", "subareas", "roles", "groups"]
+        "shared_entities": ["users", "customers", "areas", "subareas", "roles", "groups"],
+        "description": "Procesos de negocio y trámites"
+    },
+    "lml_listbuilder_mesa4core": {
+        "postgres_schema": "lml_listbuilder",
+        "primary_key": "listbuilder_id",
+        "shared_entities": ["users", "customers", "areas", "subareas", "roles"],
+        "description": "Configuraciones de listados y pantallas UI"
     }
-    # Nuevas colecciones se agregan aquí con la misma estructura
 }
