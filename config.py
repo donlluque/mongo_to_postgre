@@ -75,7 +75,13 @@ COLLECTIONS = {
     "lml_listbuilder_mesa4core": {
         "postgres_schema": "lml_listbuilder",
         "primary_key": "listbuilder_id",
-        "shared_entities": ["users", "customers", "areas", "subareas", "roles"],
+        "shared_entities": ["users", "customers", "areas", "subareas", "roles", "groups"],  # ← Agregar groups
         "description": "Configuraciones de listados y pantallas UI"
+    },
+    "lml_formbuilder_mesa4core": {
+        "postgres_schema": "lml_formbuilder",
+        "primary_key": "formbuilder_id",
+        "shared_entities": ["users", "customers", "areas", "subareas", "roles", "groups"],  # ← Completo
+        "description": "Configuraciones de formularios dinámicos UI"
     }
 }
