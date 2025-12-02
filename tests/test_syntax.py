@@ -28,6 +28,7 @@ def test_syntax():
         'migrators/base.py',
         'migrators/lml_processes.py',
         'migrators/lml_listbuilder.py',
+        'migrators/lml_formbuilder.py',  # <--- NUEVO ARCHIVO AGREGADO
     ]
     
     print("🔍 Validando sintaxis de archivos Python...")

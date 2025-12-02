@@ -12,24 +12,26 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# --- IMPORTAR TODOS LOS MIGRADORES AQUÍ ---
 from migrators.lml_processes import LmlProcessesMigrator
 from migrators.lml_listbuilder import LmlListbuilderMigrator
+from migrators.lml_formbuilder import LmlFormbuilderMigrator  # <--- NUEVO
+
+
+def get_migradores_instances():
+    """Helper para instanciar todos los migradores."""
+    return [
+        ('LmlProcessesMigrator', LmlProcessesMigrator('lml_processes')),
+        ('LmlListbuilderMigrator', LmlListbuilderMigrator('lml_listbuilder')),
+        ('LmlFormbuilderMigrator', LmlFormbuilderMigrator('lml_formbuilder')), # <--- NUEVO
+    ]
 
 
 def test_batch_tables_naming():
-    """
-    Verifica que tablas en initialize_batches() siguen convención snake_case.
-    
-    Convención: Nombres de tablas PostgreSQL deben ser snake_case
-    (ej: 'last_movements', no 'lastMovements' ni 'LastMovements')
-    """
+    """Verifica que tablas en initialize_batches() siguen convención snake_case."""
     print("\n🔍 Test: Convención de nombres de tablas")
     
-    migradores = [
-        ('LmlProcessesMigrator', LmlProcessesMigrator('lml_processes')),
-        ('LmlListbuilderMigrator', LmlListbuilderMigrator('lml_listbuilder')),
-    ]
-    
+    migradores = get_migradores_instances()
     errors = []
     
     for name, migrator in migradores:
@@ -50,19 +52,10 @@ def test_batch_tables_naming():
 
 
 def test_insert_methods_exist():
-    """
-    Verifica que existe método _insert_<tabla>_batch() para cada tabla en batches.
-    
-    Patrón: Por cada tabla en initialize_batches()['related'],
-    debe existir método _insert_{tabla}_batch()
-    """
+    """Verifica que existe método _insert_<tabla>_batch() para cada tabla."""
     print("\n🔍 Test: Métodos de inserción para tablas relacionadas")
     
-    migradores = [
-        ('LmlProcessesMigrator', LmlProcessesMigrator('lml_processes')),
-        ('LmlListbuilderMigrator', LmlListbuilderMigrator('lml_listbuilder')),
-    ]
-    
+    migradores = get_migradores_instances()
     errors = []
     
     for name, migrator in migradores:
@@ -83,20 +76,10 @@ def test_insert_methods_exist():
 
 
 def test_schema_attribute():
-    """
-    Verifica que migradores tienen atributo 'schema' definido.
-    
-    El atributo schema se usa en:
-    - Construcción de queries SQL (INSERT INTO {schema}.tabla)
-    - TRUNCATE TABLE {schema}.main CASCADE
-    """
+    """Verifica que migradores tienen atributo 'schema' definido."""
     print("\n🔍 Test: Atributo 'schema' definido")
     
-    migradores = [
-        ('LmlProcessesMigrator', LmlProcessesMigrator('lml_processes')),
-        ('LmlListbuilderMigrator', LmlListbuilderMigrator('lml_listbuilder')),
-    ]
-    
+    migradores = get_migradores_instances()
     errors = []
     
     for name, migrator in migradores:
@@ -137,11 +120,9 @@ def run_all_tests():
     
     if len(all_errors) == 0:
         print("✅ TODOS LOS TESTS PASARON")
-        print("=" * 70)
         return True
     else:
         print(f"❌ {len(all_errors)} ERRORES ENCONTRADOS")
-        print("=" * 70)
         for error in all_errors:
             print(f"   - {error}")
         return False

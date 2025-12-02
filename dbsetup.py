@@ -463,6 +463,7 @@ def setup_lml_listbuilder_schema(cursor, conn):
     print("   ✅ Schema lml_listbuilder configurado (9 tablas)")
 
 
+
 def main():
     """
     Función principal que orquesta la creación de toda la estructura.
@@ -487,7 +488,9 @@ def main():
         
         # Paso 3: Schema lml_listbuilder
         setup_lml_listbuilder_schema(cursor, conn)
+
         
+
         print("\n" + "="*60)
         print("✅ SETUP COMPLETO")
         print("="*60)
