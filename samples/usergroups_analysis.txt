@@ -1,0 +1,179 @@
+[OK] Archivo cargado: 200 documentos
+[*] Analizando estructura...
+================================================================================
+ANÁLISIS DE lml_usersgroups_mesa4core
+================================================================================
+
+Total de documentos analizados: 200
+
+--------------------------------------------------------------------------------
+CAMPOS DE PRIMER NIVEL
+--------------------------------------------------------------------------------
+
+_id:
+  Cobertura: 100.0% (200/200 docs)
+  Tipos: object
+  Samples: object{... }, object{... }, object{... }
+
+users:
+  Cobertura: 100.0% (200/200 docs)
+  Tipos: array
+  Samples: array[5], array[3], array[6]
+
+deleted:
+  Cobertura: 100.0% (200/200 docs)
+  Tipos: boolean
+  Samples: True, False
+
+lumbreVersion:
+  Cobertura: 100.0% (200/200 docs)
+  Tipos: integer
+  Samples: 1
+
+name:
+  Cobertura: 100.0% (200/200 docs)
+  Tipos: string
+  Samples: Mesa de Entradas de Secretaría de Seguridad, Mesa Planeamiento y Obras Públicas 2, Mesa Gral. Entradas Fiscalización y Control
+
+alias:
+  Cobertura: 100.0% (200/200 docs)
+  Tipos: string
+  Samples: Mesa de Entradas de Secretaría de Seguridad, Mesa Planeamiento y Obras Públicas 2, Mesa Gral. Entradas Fiscalización y Control
+
+createdBy:
+  Cobertura: 100.0% (200/200 docs)
+  Tipos: object
+  Samples: object{... }, object{... }, object{... }
+
+updatedBy:
+  Cobertura: 100.0% (200/200 docs)
+  Tipos: object
+  Samples: object{... }, object{... }, object{... }
+
+customerId:
+  Cobertura: 100.0% (200/200 docs)
+  Tipos: string
+  Samples: 61dc442d1bfce14854779785
+
+createdAt:
+  Cobertura: 100.0% (200/200 docs)
+  Tipos: object
+  Samples: object{... }, object{... }, object{... }
+
+updatedAt:
+  Cobertura: 100.0% (200/200 docs)
+  Tipos: object
+  Samples: object{... }, object{... }, object{... }
+
+__v:
+  Cobertura: 100.0% (200/200 docs)
+  Tipos: integer
+  Samples: 0
+
+pases:
+  Cobertura: 43.5% (87/200 docs)
+  Tipos: object
+  Samples: object{... }, object{... }, object{... }
+
+importedFromExternal:
+  Cobertura: 13.5% (27/200 docs)
+  Tipos: boolean
+  Samples: True
+
+--------------------------------------------------------------------------------
+ANÁLISIS DE MEMBRESÍAS (array 'users')
+--------------------------------------------------------------------------------
+
+Grupos totales: 200
+Grupos con usuarios: 199
+Total de relaciones user-group: 711
+Usuarios únicos encontrados: 524
+
+Cardinalidad de usuarios por grupo:
+  Min: 1
+  Max: 21
+  Promedio: 3.6
+
+Distribución por tamaño de grupo:
+  1-5 usuarios: 166 grupos
+  11-20 usuarios: 4 grupos
+  20+ usuarios: 1 grupos
+  6-10 usuarios: 28 grupos
+
+Samples de grupos:
+  - 'Mesa de Entradas de Secretaría de Seguridad': 5 usuarios
+    IDs: 6298c111b696620016035005, 6298c112b69662001603519a
+  - 'Mesa Planeamiento y Obras Públicas 2': 3 usuarios
+    IDs: 6298c110b696620016034edc, 6298c10eb696620016034db3
+  - 'Mesa Gral. Entradas Fiscalización y Control': 6 usuarios
+    IDs: 6298c114b696620016035380, 6298c113b69662001603523c
+
+--------------------------------------------------------------------------------
+SNAPSHOTS DE USUARIO (createdBy/updatedBy)
+--------------------------------------------------------------------------------
+
+Total de snapshots analizados: 400
+Campos encontrados en snapshots:
+  - area: 100.0% cobertura
+  - firstname: 100.0% cobertura
+  - role: 100.0% cobertura
+  - subarea: 100.0% cobertura
+  - lastname: 100.0% cobertura
+  - deleted: 100.0% cobertura
+  - customerId: 100.0% cobertura
+  - userType: 100.0% cobertura
+  - id: 100.0% cobertura
+  - dni: 100.0% cobertura
+  - email: 100.0% cobertura
+  - updatedAt: 100.0% cobertura
+  - _id: 100.0% cobertura
+  - groups: 96.5% cobertura
+  - createdAt: 78.2% cobertura
+  ... y 9 campos más
+
+--------------------------------------------------------------------------------
+ANÁLISIS DE TIMESTAMPS
+--------------------------------------------------------------------------------
+
+createdAt:
+  Cobertura: 100.0% (200/200 docs)
+  Formatos: object (MongoDB Date)
+  Sample: 2022-06-27T13:32:37.121Z
+
+updatedAt:
+  Cobertura: 100.0% (200/200 docs)
+  Formatos: object (MongoDB Date)
+  Sample: 2023-03-18T01:13:28.321Z
+
+================================================================================
+RECOMENDACIONES PARA SCHEMA PostgreSQL
+================================================================================
+
+1.  SCHEMA user_groups:
+   - user_groups.main (catálogo de grupos)
+     Columnas: id, name, alias, deleted, customer_id, created_at, updated_at
+
+2. TABLA DE RELACIÓN N:M:
+   - user_groups.members (group_id, user_id)
+     Estimado de registros: 711
+     Usuarios únicos: 524
+     Cardinalidad promedio: 3.6 usuarios por grupo
+
+3. ESTRATEGIA DE MIGRACIÓN:
+   - Migrar desde lml_usersgroups (no desde lml_users)
+   - DELETE + INSERT por grupo (para sincronizar membresías)
+   - Validar que todos los user_ids existen en users. main (FK)
+
+4. CAMPOS OPCIONALES:
+   2 campos requieren NULL en PostgreSQL:
+   - pases (43.5% cobertura)
+   - importedFromExternal (13.5% cobertura)
+
+5. SNAPSHOTS (createdBy/updatedBy):
+   - NO migrar snapshots completos
+   - Solo extraer: created_by_user_id, updated_by_user_id
+   - Los snapshots son auditoría histórica (metadata)
+
+================================================================================
+[OK] Análisis completado
+================================================================================
