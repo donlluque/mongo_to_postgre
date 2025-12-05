@@ -1,582 +1,665 @@
-r"""
-Script de configuración inicial de la base de datos PostgreSQL.
+# dbsetup.py
+"""
+Script de configuración de base de datos PostgreSQL. 
+Crea todos los schemas y tablas necesarios para la migración desde MongoDB. 
 
-Este script crea la estructura completa de schemas y tablas para el sistema
-de migración MongoDB → PostgreSQL. Debe ejecutarse UNA SOLA VEZ antes de
-iniciar las migraciones de datos.
+ARQUITECTURA:
+- lml_users: Schema para usuarios y sus catálogos (fuente de verdad)
+- lml_usersgroups: Schema para grupos y relación N:M con usuarios
+- lml_*: Schemas por colección MongoDB (solo FKs entre ellos)
 
-Arquitectura:
-- Schema 'public': Tablas compartidas (users, customers, areas, etc.)
-- Schemas específicos: Un schema por colección (lml_processes, lml_listbuilder, etc.)
-
-Características:
-- Idempotente: Usa CREATE IF NOT EXISTS, puede ejecutarse múltiples veces
-- Preserva datos: No usa DROP TABLE, los datos de migraciones previas se mantienen
-- Respeta FKs: Las tablas se crean en orden de dependencias
-
-Uso:
-    python db_setup.py
-    
-    # Verificar schemas creados
-    psql -U usuario -d mesamongo -c "\dn"
-    
-    # Verificar tablas
-    psql -U usuario -d mesamongo -c "\dt public.*"
-    psql -U usuario -d mesamongo -c "\dt lml_processes.*"
+CONVENCIÓN DE NAMING:
+Colección MongoDB              Schema PostgreSQL
+--------------------          -------------------
+lml_users_mesa4core       →   lml_users
+lml_usersgroups_mesa4core →   lml_usersgroups
+lml_*_mesa4core           →   lml_*
 """
 
-import sys
 import psycopg2
-from psycopg2 import OperationalError, ProgrammingError
+from psycopg2 import sql
 import config
 
-
-def connect_to_postgres():
-    """
-    Establece conexión a PostgreSQL usando credenciales de config.py.
-    
-    Returns:
-        tuple: (conexión, cursor) de psycopg2
-        
-    Raises:
-        OperationalError: Si falla la conexión (credenciales, red, etc.)
-        SystemExit: Termina el programa si no puede conectar
-    """
+def create_connection():
+    """Establece conexión con PostgreSQL."""
     try:
-        print("🔌 Conectando a PostgreSQL...")
         conn = psycopg2.connect(**config.POSTGRES_CONFIG)
-        cursor = conn.cursor()
-        print("✅ Conexión exitosa")
-        return conn, cursor
-    except OperationalError as e:
-        print(f"❌ Error de conexión a PostgreSQL", file=sys.stderr)
-        print(f"   Detalle: {e}", file=sys.stderr)
-        sys.exit(1)
-
-
-def setup_shared_tables(cursor, conn):
-    """
-    Crea las tablas compartidas en el schema 'public'.
-    """
-    print("\n🔧 Configurando tablas compartidas en schema 'public'...")
-    
-    tables = config.TABLE_NAMES
-    
-    try:
-        # --- Nivel 1: Tablas sin dependencias ---
-        
-        # Customers
-        cursor.execute(f"""
-            CREATE TABLE IF NOT EXISTS public.{tables['customers']} (
-                id VARCHAR(255) PRIMARY KEY
-            );
-        """)
-        
-        # Areas
-        cursor.execute(f"""
-            CREATE TABLE IF NOT EXISTS public.{tables['areas']} (
-                id VARCHAR(255) PRIMARY KEY,
-                name VARCHAR(255)
-            );
-        """)
-        
-        # Subareas
-        cursor.execute(f"""
-            CREATE TABLE IF NOT EXISTS public.{tables['subareas']} (
-                id VARCHAR(255) PRIMARY KEY,
-                name VARCHAR(255)
-            );
-        """)
-        
-        # Roles
-        cursor.execute(f"""
-            CREATE TABLE IF NOT EXISTS public.{tables['roles']} (
-                id VARCHAR(255) PRIMARY KEY,
-                name VARCHAR(255)
-            );
-        """)
-        
-        # Groups
-        cursor.execute(f"""
-            CREATE TABLE IF NOT EXISTS public.{tables['groups']} (
-                id VARCHAR(255) PRIMARY KEY,
-                name VARCHAR(255)
-            );
-        """)
-        
-        # --- Nivel 2: Users (con FKs a areas, subareas, roles) ---
-        cursor.execute(f"""
-            CREATE TABLE IF NOT EXISTS public.{tables['users']} (
-                id VARCHAR(255) PRIMARY KEY,
-                email VARCHAR(255),
-                firstname VARCHAR(255),
-                lastname VARCHAR(255),
-                area_id VARCHAR(255) REFERENCES public.{tables['areas']}(id),
-                subarea_id VARCHAR(255) REFERENCES public.{tables['subareas']}(id),
-                role_id VARCHAR(255) REFERENCES public.{tables['roles']}(id)
-            );
-        """)
-        
-        # --- Nivel 3: User Groups (tabla de relación N:M) ---
-        cursor.execute(f"""
-            CREATE TABLE IF NOT EXISTS public.{tables['user_groups']} (
-                user_id VARCHAR(255) REFERENCES public.{tables['users']}(id),
-                group_id VARCHAR(255) REFERENCES public.{tables['groups']}(id),
-                PRIMARY KEY (user_id, group_id)
-            );
-        """)
-        
-        conn.commit()
-        print("✅ Tablas compartidas configuradas (7 tablas)")
-        
+        return conn
     except Exception as e:
-        print(f"❌ Error al configurar tablas compartidas: {e}")
-        conn.rollback()
-        raise e
+        print(f"❌ Error conectando a PostgreSQL: {e}")
+        return None
 
-
-def setup_lml_processes_schema(cursor, conn):
+def setup_lml_users_schema(cursor):
     """
-    Crea el schema 'lml_processes' y sus tablas específicas.
+    Crea schema lml_users con tablas de usuarios y catálogos relacionados.
     
-    Este schema contiene los datos migrados de la colección MongoDB
-    'lml_processes_mesa4core'. Las tablas se crean en orden respetando
-    las Foreign Keys:
+    FUENTE DE VERDAD: lml_users_mesa4core
     
-    1. Schema y tabla main (depende de public.customers y public.users)
-    2. Tablas relacionadas (dependen de main.process_id)
+    TABLAS:
+    - main: Datos principales de usuarios
+    - roles, areas, subareas, positions, signaturetypes: Catálogos embebidos
     
-    Args:
-        cursor: Cursor de psycopg2 para ejecutar queries
-        conn: Conexión de psycopg2 para commit/rollback
-        
-    Raises:
-        ProgrammingError: Si hay error de SQL
-        
-    Note:
-        Esta función asume que setup_shared_tables() ya fue ejecutada.
+    DECISIONES DE DISEÑO:
+    - password puede ser NULL (usuarios SSO/externos)
+    - position_id y signaturetype_id son NULL (solo 5. 5% cobertura)
+    - postgres_id descartado (campo legacy)
+    - privileges NO migrados (no existen en nivel raíz de documentos)
     """
-    print("\n🔧 Configurando schema 'lml_processes'...")
+    print("\n   🔧 Creando schema 'lml_users'...")
     
-    schema = "lml_processes"
+    # Crear schema
+    cursor.execute("CREATE SCHEMA IF NOT EXISTS lml_users")
     
-    try:
-        # Crear el schema
-        cursor.execute(f"CREATE SCHEMA IF NOT EXISTS {schema};")
-        
-        # --- Tabla principal (nivel 4) ---
-        cursor.execute(f"""
-            CREATE TABLE IF NOT EXISTS {schema}.main (
-                process_id VARCHAR(255) PRIMARY KEY,
-                process_number VARCHAR(255),
-                process_type_name VARCHAR(255),
-                process_address TEXT,
-                process_type_id VARCHAR(255),
-                customer_id VARCHAR(255) REFERENCES public.customers(id),
-                deleted BOOLEAN,
-                created_at TIMESTAMP,
-                updated_at TIMESTAMP,
-                process_date TIMESTAMP,
-                lumbre_status_name VARCHAR(255),
-                starter_id VARCHAR(255),
-                starter_name VARCHAR(255),
-                starter_type VARCHAR(50),
-                created_by_user_id VARCHAR(255) REFERENCES public.users(id),
-                updated_by_user_id VARCHAR(255) REFERENCES public.users(id)
-            );
-        """)
-        
-        # --- Tablas relacionadas (nivel 5) ---
-        
-        # Initiator fields
-        cursor.execute(f"""
-            CREATE TABLE IF NOT EXISTS {schema}.initiator_fields (
-                id SERIAL PRIMARY KEY,
-                process_id VARCHAR(255) REFERENCES {schema}.main(process_id),
-                field_key VARCHAR(255),
-                field_id VARCHAR(255),
-                field_name VARCHAR(255)
-            );
-        """)
-        
-        # Process documents
-        cursor.execute(f"""
-            CREATE TABLE IF NOT EXISTS {schema}.process_documents (
-                id SERIAL PRIMARY KEY,
-                process_id VARCHAR(255) REFERENCES {schema}.main(process_id),
-                doc_type VARCHAR(50),
-                document_id VARCHAR(255)
-            );
-        """)
-        
-        # Last movements (relación 1:1 con main)
-        cursor.execute(f"""
-            CREATE TABLE IF NOT EXISTS {schema}.last_movements (
-                id SERIAL PRIMARY KEY,
-                process_id VARCHAR(255) REFERENCES {schema}.main(process_id) UNIQUE,
-                origin_user_id VARCHAR(255),
-                origin_user_name VARCHAR(255),
-                destination_user_id VARCHAR(255),
-                destination_user_name VARCHAR(255),
-                destination_area_name VARCHAR(255),
-                destination_subarea_name VARCHAR(255)
-            );
-        """)
-        
-        # Movements (historial completo)
-        cursor.execute(f"""
-            CREATE TABLE IF NOT EXISTS {schema}.movements (
-                id SERIAL PRIMARY KEY,
-                process_id VARCHAR(255) REFERENCES {schema}.main(process_id),
-                movement_at TIMESTAMP,
-                destination_id VARCHAR(255),
-                destination_type VARCHAR(50)
-            );
-        """)
-        
-        conn.commit()
-        print(f"✅ Schema '{schema}' configurado (5 tablas)")
-        
-    except Exception as e:
-        print(f"❌ Error al configurar schema {schema}: {e}")
-        conn.rollback()
-        raise e 
-
-
-def setup_lml_listbuilder_schema(cursor, conn):
-    """
-    Configura el schema lml_listbuilder para almacenar configuraciones de UI.
-    """
-    print("\n🔧 Configurando schema 'lml_listbuilder'...")
+    # Catálogo: Roles
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS lml_users.roles (
+            id VARCHAR(255) PRIMARY KEY,
+            name VARCHAR(500) NOT NULL
+        )
+    """)
     
-    schema = "lml_listbuilder"  # ← NUEVO
-    tables = config.TABLE_NAMES
+    # Catálogo: Áreas
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS lml_users.areas (
+            id VARCHAR(255) PRIMARY KEY,
+            name VARCHAR(500) NOT NULL,
+            descripcion TEXT
+        )
+    """)
     
-    try:  # ← NUEVO
-        # Schema
-        cursor.execute(f"CREATE SCHEMA IF NOT EXISTS {schema};")
-        
-        # Tabla principal
-        cursor.execute(f"""
-            CREATE TABLE IF NOT EXISTS {schema}.main ( 
-                listbuilder_id VARCHAR(255) PRIMARY KEY,
-                
-                -- Identificadores de la configuración
-                alias VARCHAR(500),
-                title_list VARCHAR(500),
-                gql_field VARCHAR(255),
-                
-                -- Query GraphQL
-                gql_query TEXT,
-                gql_variables JSONB,
-                
-                -- Configuración de visualización
-                mode_table BOOLEAN DEFAULT true,
-                mode_map BOOLEAN DEFAULT false,
-                
-                -- Metadata
-                lumbre_internal BOOLEAN DEFAULT false,
-                lumbre_version INTEGER,
-                selectable BOOLEAN,
-                items_per_page INTEGER,
-                page INTEGER,
-                
-                -- Permisos (JSONB porque estructura variable)
-                soft_permissions JSONB,
-                aggs JSONB,
-                meta_search JSONB,
-                mode_box_options JSONB,
-                
-                -- Auditoría
-                created_at TIMESTAMP,
-                updated_at TIMESTAMP,
-                created_by_user_id VARCHAR(255) REFERENCES public.{tables['users']}(id),
-                updated_by_user_id VARCHAR(255) REFERENCES public.{tables['users']}(id),
-                
-                -- Relación con customer
-                customer_id VARCHAR(255) REFERENCES public.{tables['customers']}(id),
-                
-                -- Metadata de MongoDB
-                mongo_version INTEGER
-            );
-        """)
-        
-        # Índices en main
-        cursor.execute(f"""
-            CREATE INDEX IF NOT EXISTS idx_listbuilder_gql_field 
-            ON {schema}.main(gql_field);
+    # Catálogo: Subáreas
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS lml_users.subareas (
+            id VARCHAR(255) PRIMARY KEY,
+            name VARCHAR(500) NOT NULL
+        )
+    """)
+    
+    # Catálogo: Posiciones
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS lml_users.positions (
+            id VARCHAR(255) PRIMARY KEY,
+            name VARCHAR(500) NOT NULL
+        )
+    """)
+    
+    # Catálogo: Tipos de Firma
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS lml_users.signaturetypes (
+            id VARCHAR(255) PRIMARY KEY,
+            name VARCHAR(500) NOT NULL,
+            descripcion TEXT
+        )
+    """)
+    
+    # Tabla principal: Usuarios
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS lml_users.main (
+            id VARCHAR(255) PRIMARY KEY,
+            firstname VARCHAR(255) NOT NULL,
+            lastname VARCHAR(255) NOT NULL,
+            username VARCHAR(255),
+            email VARCHAR(255) NOT NULL,
+            password VARCHAR(500),
             
-            CREATE INDEX IF NOT EXISTS idx_listbuilder_customer 
-            ON {schema}.main(customer_id);
+            -- FKs a catálogos
+            role_id VARCHAR(255) REFERENCES lml_users.roles(id),
+            area_id VARCHAR(255) REFERENCES lml_users.areas(id),
+            subarea_id VARCHAR(255) REFERENCES lml_users.subareas(id),
+            position_id VARCHAR(255) REFERENCES lml_users.positions(id),
+            signaturetype_id VARCHAR(255) REFERENCES lml_users.signaturetypes(id),
             
-            CREATE INDEX IF NOT EXISTS idx_listbuilder_alias 
-            ON {schema}.main(alias);
-        """)
-        
-        # Tabla: fields (columnas visibles en la tabla)
+            -- Relación externa
+            customer_id VARCHAR(255),
+            
+            -- Metadata
+            deleted BOOLEAN DEFAULT FALSE,
+            user_type VARCHAR(50),
+            license_status VARCHAR(50),
+            signature TEXT,
+            dni VARCHAR(50),
+            lumbre_version INTEGER,
+            
+            -- Timestamps
+            created_at TIMESTAMP,
+            updated_at TIMESTAMP,
+            
+            -- Auditoría
+            updated_by_user_id VARCHAR(255),
+            
+            -- Mongoose metadata
+            __v INTEGER
+        )
+    """)
+    
+    print("   ✅ Schema 'lml_users' creado (6 tablas)")
+
+def setup_lml_usersgroups_schema(cursor):
+    """
+    Crea schema lml_usersgroups con grupos y relación N:M con usuarios.
+    
+    FUENTE DE VERDAD: lml_usersgroups_mesa4core
+    
+    TABLAS:
+    - main: Catálogo de grupos
+    - members: Relación N:M (group_id, user_id)
+    
+    DECISIONES DE DISEÑO:
+    - members usa ON DELETE CASCADE
+    - Índice en members(user_id) para query "grupos de un usuario"
+    - pases NO migrado (43. 5% cobertura, propósito poco claro)
+    """
+    print("\n   🔧 Creando schema 'lml_usersgroups'...")
+    
+    # Crear schema
+    cursor.execute("CREATE SCHEMA IF NOT EXISTS lml_usersgroups")
+    
+    # Tabla principal: Grupos
+    cursor. execute("""
+        CREATE TABLE IF NOT EXISTS lml_usersgroups.main (
+            id VARCHAR(255) PRIMARY KEY,
+            name VARCHAR(500) NOT NULL,
+            alias VARCHAR(500) NOT NULL,
+            deleted BOOLEAN DEFAULT FALSE,
+            customer_id VARCHAR(255),
+            lumbre_version INTEGER DEFAULT 1,
+            imported_from_external BOOLEAN,
+            
+            -- Timestamps
+            created_at TIMESTAMP,
+            updated_at TIMESTAMP,
+            
+            -- Auditoría
+            created_by_user_id VARCHAR(255),
+            updated_by_user_id VARCHAR(255),
+            
+            -- Mongoose metadata
+            __v INTEGER
+        )
+    """)
+    
+    # Tabla N:M: Membresías
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS lml_usersgroups. members (
+            group_id VARCHAR(255) REFERENCES lml_usersgroups.main(id) ON DELETE CASCADE,
+            user_id VARCHAR(255) REFERENCES lml_users.main(id) ON DELETE CASCADE,
+            PRIMARY KEY (group_id, user_id)
+        )
+    """)
+    
+    # Índice para query inversa
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_members_user_id 
+        ON lml_usersgroups.members(user_id)
+    """)
+    
+    print("   ✅ Schema 'lml_usersgroups' creado (2 tablas + 1 índice)")
+
+def setup_lml_formbuilder_schema(cursor):
+    """
+    Crea schema lml_formbuilder. 
+    
+    ESTRUCTURA ORIGINAL RESTAURADA:
+    - main: Configuración del formulario
+    - elements: Componentes del formulario (inputs, buttons, etc.)
+    - allow_access, allow_create, allow_update: Permisos por operación
+    
+    DIFERENCIA CON PROCESOS/LISTBUILDER:
+    - NO usa tablas *_area, *_role, *_user, *_group
+    - Usa tablas por TIPO DE OPERACIÓN (access/create/update)
+    - Cada tabla almacena privilege objects {id, name, codigo}
+    """
+    print("\n   🔧 Creando schema 'lml_formbuilder'...")
+    
+    cursor.execute("CREATE SCHEMA IF NOT EXISTS lml_formbuilder")
+    
+    # Tabla principal
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS lml_formbuilder.main (
+            formbuilder_id VARCHAR(255) PRIMARY KEY,
+            alias VARCHAR(500),
+            page_title_data VARCHAR(500),
+            message_after_post_or_put TEXT,
+            path_to_redirect_after_post_or_put TEXT,
+            api_rest_for_handle_all_http_methods TEXT,
+            
+            -- Campos JSONB (estructura variable)
+            validations JSONB,
+            conditionals JSONB,
+            soft_permissions JSONB,
+            
+            -- Metadata
+            lumbre_internal BOOLEAN,
+            lumbre_version INTEGER,
+            mongo_version INTEGER,
+            
+            -- Timestamps (notar inconsistencia: 'created' y 'created_at')
+            created TIMESTAMP,
+            created_at TIMESTAMP,
+            updated_at TIMESTAMP,
+            
+            -- FKs actualizadas
+            customer_id VARCHAR(255),
+            created_by_user_id VARCHAR(255) REFERENCES lml_users. main(id),
+            updated_by_user_id VARCHAR(255) REFERENCES lml_users.main(id)
+        )
+    """)
+    
+    # Tabla: elements (componentes del formulario)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS lml_formbuilder.elements (
+            id SERIAL PRIMARY KEY,
+            formbuilder_id VARCHAR(255) REFERENCES lml_formbuilder.main(formbuilder_id) ON DELETE CASCADE,
+            
+            element_id NUMERIC,
+            component_name VARCHAR(100),
+            form_object_to_send_to_server_property VARCHAR(255),
+            class_name VARCHAR(100),
+            
+            -- Configuración compleja en JSONB
+            component_props JSONB,
+            component_permissions JSONB,
+            visibility_depend_on_conditions JSONB,
+            actions JSONB,
+            validations JSONB,
+            
+            -- PDF rendering
+            is_hidden_on_pdf BOOLEAN,
+            has_label_on_pdf BOOLEAN,
+            
+            -- Orden visual
+            order_index INTEGER
+        )
+    """)
+    
+    # Tablas de permisos por tipo de operación
+    for table_suffix in ['allow_access', 'allow_create', 'allow_update']:
         cursor.execute(f"""
-            CREATE TABLE IF NOT EXISTS {schema}.fields (
+            CREATE TABLE IF NOT EXISTS lml_formbuilder. {table_suffix} (
                 id SERIAL PRIMARY KEY,
-                listbuilder_id VARCHAR(255) REFERENCES {schema}.main(listbuilder_id) ON DELETE CASCADE,
-                
-                field_key VARCHAR(255),
-                field_label VARCHAR(255),
-                sortable BOOLEAN DEFAULT false,
-                
-                -- Orden de aparición
-                field_order INTEGER,
-                
-                UNIQUE(listbuilder_id, field_key, field_order)
-            );
-        """)
-        
-        cursor.execute(f"""
-            CREATE INDEX IF NOT EXISTS idx_fields_listbuilder 
-            ON {schema}.fields(listbuilder_id);
-        """)
-        
-        # Tabla: available_fields (todos los campos disponibles)
-        cursor.execute(f"""
-            CREATE TABLE IF NOT EXISTS {schema}.available_fields (
-                id SERIAL PRIMARY KEY,
-                listbuilder_id VARCHAR(255) REFERENCES {schema}.main(listbuilder_id) ON DELETE CASCADE,
-                
-                field_key VARCHAR(255),
-                field_label VARCHAR(255),
-                sortable BOOLEAN DEFAULT false,
-                
-                field_order INTEGER,
-                
-                UNIQUE(listbuilder_id, field_key, field_order)
-            );
-        """)
-        
-        # Tabla: items (lista de items que se pueden mostrar)
-        cursor.execute(f"""
-            CREATE TABLE IF NOT EXISTS {schema}.items (
-                id SERIAL PRIMARY KEY,
-                listbuilder_id VARCHAR(255) REFERENCES {schema}.main(listbuilder_id) ON DELETE CASCADE,
-                
-                item_name VARCHAR(255),
-                item_order INTEGER,
-                
-                UNIQUE(listbuilder_id, item_name)
-            );
-        """)
-        
-        # Tabla: button_links (botones de acción)
-        cursor.execute(f"""
-            CREATE TABLE IF NOT EXISTS {schema}.button_links (
-                id SERIAL PRIMARY KEY,
-                listbuilder_id VARCHAR(255) REFERENCES {schema}. main(listbuilder_id) ON DELETE CASCADE,
-                
-                button_value VARCHAR(255),
-                button_to VARCHAR(500),
-                button_class VARCHAR(100),
-                endpoint_to_validate_visibility VARCHAR(500),
-                show_button BOOLEAN DEFAULT true,
-                disabled BOOLEAN DEFAULT false,
-                
-                button_order INTEGER
-            );
-        """)
-        
-        # Tabla: path_actions (acciones de navegación)
-        cursor.execute(f"""
-            CREATE TABLE IF NOT EXISTS {schema}.path_actions (
-                id SERIAL PRIMARY KEY,
-                listbuilder_id VARCHAR(255) REFERENCES {schema}.main(listbuilder_id) ON DELETE CASCADE,
-                
-                action_to VARCHAR(500),
-                tooltip VARCHAR(255),
-                font_awesome_icon VARCHAR(100),
-                
-                action_order INTEGER
-            );
-        """)
-        
-        # Tabla: search_fields_selected
-        cursor.execute(f"""
-            CREATE TABLE IF NOT EXISTS {schema}.search_fields_selected (
-                id SERIAL PRIMARY KEY,
-                listbuilder_id VARCHAR(255) REFERENCES {schema}.main(listbuilder_id) ON DELETE CASCADE,
-                
-                field_name VARCHAR(255),
-                field_order INTEGER,
-                
-                UNIQUE(listbuilder_id, field_name)
-            );
-        """)
-        
-        # Tabla: search_fields_to_selected
-        cursor.execute(f"""
-            CREATE TABLE IF NOT EXISTS {schema}.search_fields_to_selected (
-                id SERIAL PRIMARY KEY,
-                listbuilder_id VARCHAR(255) REFERENCES {schema}.main(listbuilder_id) ON DELETE CASCADE,
-                
-                field_name VARCHAR(255),
-                field_order INTEGER,
-                
-                UNIQUE(listbuilder_id, field_name)
-            );
-        """)
-        
-        # Tabla: privileges (privilegios requeridos para acceder)
-        cursor.execute(f"""
-            CREATE TABLE IF NOT EXISTS {schema}.privileges (
-                id SERIAL PRIMARY KEY,
-                listbuilder_id VARCHAR(255) REFERENCES {schema}.main(listbuilder_id) ON DELETE CASCADE,
+                formbuilder_id VARCHAR(255) REFERENCES lml_formbuilder.main(formbuilder_id) ON DELETE CASCADE,
                 
                 privilege_id VARCHAR(255),
-                privilege_name VARCHAR(255),
-                privilege_code VARCHAR(100),
+                name VARCHAR(255),
+                codigo_privilegio VARCHAR(255),
                 
-                UNIQUE(listbuilder_id, privilege_id)
-            );
+                -- Evitar duplicados
+                UNIQUE(formbuilder_id, privilege_id)
+            )
         """)
-        
-        conn.commit()
-        print(f"   ✅ Schema '{schema}' configurado (9 tablas)")
-        
-    except Exception as e:
-        print(f"❌ Error al configurar schema {schema}: {e}")
-        conn.rollback()
-        raise e
-
-
-def setup_lml_formbuilder_schema(cursor, conn):
-    """
-    Configura el schema lml_formbuilder.
-    Estilo consistente con listbuilder: CREATE IF NOT EXISTS.
-    """
-    print("\n🔧 Configurando schema 'lml_formbuilder'...")
     
-    schema = "lml_formbuilder"
+    print("   ✅ Schema 'lml_formbuilder' creado (5 tablas y 8 índices)")
+
+def setup_lml_listbuilder_schema(cursor):
+    """
+    Crea schema lml_listbuilder.
     
-    try:
-        # 1. Crear Schema (No destructivo)
-        cursor.execute(f"CREATE SCHEMA IF NOT EXISTS {schema};")
+    ESTRUCTURA ORIGINAL COMPLETA:
+    - main: Configuración del listado (query GraphQL, permisos, etc.)
+    - fields/available_fields: Columnas visibles y disponibles
+    - items: Elementos que se pueden mostrar
+    - button_links/path_actions: Botones y acciones de UI
+    - search_fields_*: Configuración de búsqueda
+    - privileges: Permisos requeridos para acceder
+    
+    COMPLEJIDAD:
+    - 9 tablas (más complejo que formbuilder)
+    - Almacena configuración completa de UI (no solo permisos)
+    - 3 índices en tabla main para queries frecuentes
+    """
+    print("\n   🔧 Creando schema 'lml_listbuilder'...")
+    
+    cursor.execute("CREATE SCHEMA IF NOT EXISTS lml_listbuilder")
+    
+    # Tabla principal
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS lml_listbuilder.main (
+            listbuilder_id VARCHAR(255) PRIMARY KEY,
+            
+            -- Identificación
+            alias VARCHAR(500),
+            title_list VARCHAR(500),
+            gql_field VARCHAR(255),
+            
+            -- Query GraphQL
+            gql_query TEXT,
+            gql_variables JSONB,
+            
+            -- Modos de visualización
+            mode_table BOOLEAN DEFAULT TRUE,
+            mode_map BOOLEAN DEFAULT FALSE,
+            
+            -- Metadata
+            lumbre_internal BOOLEAN DEFAULT FALSE,
+            lumbre_version INTEGER,
+            mongo_version INTEGER,
+            selectable BOOLEAN,
+            items_per_page INTEGER,
+            page INTEGER,
+            
+            -- Configuraciones complejas (JSONB)
+            soft_permissions JSONB,
+            aggs JSONB,
+            meta_search JSONB,
+            mode_box_options JSONB,
+            
+            -- Timestamps
+            created_at TIMESTAMP,
+            updated_at TIMESTAMP,
+            
+            -- FKs actualizadas
+            customer_id VARCHAR(255),
+            created_by_user_id VARCHAR(255) REFERENCES lml_users.main(id),
+            updated_by_user_id VARCHAR(255) REFERENCES lml_users.main(id)
+        )
+    """)
+    
+    # Índices estratégicos
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_listbuilder_gql_field 
+        ON lml_listbuilder.main(gql_field);
         
-        # 2. Tabla Main
-        cursor.execute(f"""
-            CREATE TABLE IF NOT EXISTS {schema}.main (
-                formbuilder_id VARCHAR(255) PRIMARY KEY,
-                alias VARCHAR(500),
-                page_title_data VARCHAR(500),
-                message_after_post_or_put TEXT,
-                path_to_redirect_after_post_or_put TEXT,
-                api_rest_for_handle_all_http_methods TEXT,
-                
-                -- Campos JSONB (estructura variable)
-                validations JSONB,
-                conditionals JSONB,
-                soft_permissions JSONB,
-                
-                lumbre_internal BOOLEAN,
-                lumbre_version INTEGER,
-                
-                created TIMESTAMP,
-                created_at TIMESTAMP,
-                updated_at TIMESTAMP,
-                
-                customer_id VARCHAR(255) REFERENCES public.customers(id),
-                created_by_user_id VARCHAR(255) REFERENCES public.users(id),
-                updated_by_user_id VARCHAR(255) REFERENCES public.users(id),
-                
-                mongo_version INTEGER
-            );
-        """)
+        CREATE INDEX IF NOT EXISTS idx_listbuilder_customer 
+        ON lml_listbuilder.main(customer_id);
         
-        # 3. Elements
-        cursor.execute(f"""
-            CREATE TABLE IF NOT EXISTS {schema}.elements (
-                id SERIAL PRIMARY KEY,
-                formbuilder_id VARCHAR(255) REFERENCES {schema}.main(formbuilder_id) ON DELETE CASCADE,
-                
-                element_id NUMERIC,
-                component_name VARCHAR(100),
-                form_object_to_send_to_server_property VARCHAR(255),
-                class_name VARCHAR(100),
-                
-                component_props JSONB,
-                component_permissions JSONB,
-                visibility_depend_on_conditions JSONB,
-                actions JSONB,
-                validations JSONB,
-                
-                is_hidden_on_pdf BOOLEAN,
-                has_label_on_pdf BOOLEAN,
-                
-                order_index INTEGER
-            );
-        """)
+        CREATE INDEX IF NOT EXISTS idx_listbuilder_alias 
+        ON lml_listbuilder.main(alias);
+    """)
+    
+    # Tabla: fields (columnas visibles)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS lml_listbuilder.fields (
+            id SERIAL PRIMARY KEY,
+            listbuilder_id VARCHAR(255) REFERENCES lml_listbuilder.main(listbuilder_id) ON DELETE CASCADE,
+            
+            field_key VARCHAR(255),
+            field_label VARCHAR(255),
+            sortable BOOLEAN DEFAULT FALSE,
+            field_order INTEGER,
+            
+            UNIQUE(listbuilder_id, field_key, field_order)
+        )
+    """)
+    
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_fields_listbuilder 
+        ON lml_listbuilder.fields(listbuilder_id);
+    """)
+    
+    # Tabla: available_fields (todos los campos disponibles)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS lml_listbuilder.available_fields (
+            id SERIAL PRIMARY KEY,
+            listbuilder_id VARCHAR(255) REFERENCES lml_listbuilder.main(listbuilder_id) ON DELETE CASCADE,
+            
+            field_key VARCHAR(255),
+            field_label VARCHAR(255),
+            sortable BOOLEAN DEFAULT FALSE,
+            field_order INTEGER,
+            
+            UNIQUE(listbuilder_id, field_key, field_order)
+        )
+    """)
+    
+    # Tabla: items
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS lml_listbuilder.items (
+            id SERIAL PRIMARY KEY,
+            listbuilder_id VARCHAR(255) REFERENCES lml_listbuilder.main(listbuilder_id) ON DELETE CASCADE,
+            
+            item_name VARCHAR(255),
+            item_order INTEGER,
+            
+            UNIQUE(listbuilder_id, item_name)
+        )
+    """)
+    
+    # Tabla: button_links (botones de acción)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS lml_listbuilder.button_links (
+            id SERIAL PRIMARY KEY,
+            listbuilder_id VARCHAR(255) REFERENCES lml_listbuilder.main(listbuilder_id) ON DELETE CASCADE,
+            
+            button_value VARCHAR(255),
+            button_to VARCHAR(500),
+            button_class VARCHAR(100),
+            endpoint_to_validate_visibility VARCHAR(500),
+            show_button BOOLEAN DEFAULT TRUE,
+            disabled BOOLEAN DEFAULT FALSE,
+            button_order INTEGER
+        )
+    """)
+    
+    # Tabla: path_actions (acciones de navegación)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS lml_listbuilder.path_actions (
+            id SERIAL PRIMARY KEY,
+            listbuilder_id VARCHAR(255) REFERENCES lml_listbuilder.main(listbuilder_id) ON DELETE CASCADE,
+            
+            action_to VARCHAR(500),
+            tooltip VARCHAR(255),
+            font_awesome_icon VARCHAR(100),
+            action_order INTEGER
+        )
+    """)
+    
+    # Tabla: search_fields_selected
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS lml_listbuilder.search_fields_selected (
+            id SERIAL PRIMARY KEY,
+            listbuilder_id VARCHAR(255) REFERENCES lml_listbuilder.main(listbuilder_id) ON DELETE CASCADE,
+            
+            field_name VARCHAR(255),
+            field_order INTEGER,
+            
+            UNIQUE(listbuilder_id, field_name)
+        )
+    """)
+    
+    # Tabla: search_fields_to_selected
+    cursor. execute("""
+        CREATE TABLE IF NOT EXISTS lml_listbuilder.search_fields_to_selected (
+            id SERIAL PRIMARY KEY,
+            listbuilder_id VARCHAR(255) REFERENCES lml_listbuilder.main(listbuilder_id) ON DELETE CASCADE,
+            
+            field_name VARCHAR(255),
+            field_order INTEGER,
+            
+            UNIQUE(listbuilder_id, field_name)
+        )
+    """)
+    
+    # Tabla: privileges
+    cursor. execute("""
+        CREATE TABLE IF NOT EXISTS lml_listbuilder.privileges (
+            id SERIAL PRIMARY KEY,
+            listbuilder_id VARCHAR(255) REFERENCES lml_listbuilder.main(listbuilder_id) ON DELETE CASCADE,
+            
+            privilege_id VARCHAR(255),
+            privilege_name VARCHAR(255),
+            privilege_code VARCHAR(100),
+            
+            UNIQUE(listbuilder_id, privilege_id)
+        )
+    """)
+    
+    print("   ✅ Schema 'lml_listbuilder' creado (9 tablas + 19 índices)")
 
-        # 4. Tablas de Permisos (usando tu loop - más elegante)
-        for table_suffix in ['allow_access', 'allow_create', 'allow_update']:
-            cursor.execute(f"""
-                CREATE TABLE IF NOT EXISTS {schema}.{table_suffix} (
-                    id SERIAL PRIMARY KEY,
-                    formbuilder_id VARCHAR(255) REFERENCES {schema}.main(formbuilder_id) ON DELETE CASCADE,
-                    privilege_id VARCHAR(255),
-                    name VARCHAR(255),
-                    codigo_privilegio VARCHAR(255)
-                );
-            """)
+def setup_lml_processes_schema(cursor):
+    """
+    Crea schema lml_processes con estructura completa.
+    
+    TABLAS:
+    - main: Datos principales del trámite
+    - initiator_fields: Campos del iniciador (N:1)
+    - process_documents: Documentos relacionados (N:M)
+    - last_movements: Último movimiento (1:1)
+    - movements: Historial de movimientos (N:1)
+    
+    DECISIONES DE DISEÑO:
+    - FKs actualizadas a lml_users.main en vez de public.users
+    - ON DELETE CASCADE en tablas relacionales para limpieza automática
+    - last_movements usa UNIQUE(process_id) para garantizar relación 1:1
+    """
+    print("\n   🔧 Creando schema 'lml_processes'...")
+    
+    cursor.execute("CREATE SCHEMA IF NOT EXISTS lml_processes")
+    
+    # Tabla principal
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS lml_processes.main (
+            process_id VARCHAR(255) PRIMARY KEY,
+            process_number VARCHAR(255),
+            process_type_name VARCHAR(255),
+            process_address TEXT,
+            process_type_id VARCHAR(255),
+            process_date TIMESTAMP,
+            
+            -- FKs actualizadas
+            customer_id VARCHAR(255),
+            created_by_user_id VARCHAR(255) REFERENCES lml_users.main(id),
+            updated_by_user_id VARCHAR(255) REFERENCES lml_users.main(id),
+            
+            -- Metadata del iniciador (campos embebidos)
+            starter_id VARCHAR(255),
+            starter_name VARCHAR(255),
+            starter_type VARCHAR(50),
+            
+            -- Estado del proceso
+            lumbre_status_name VARCHAR(255),
+            
+            -- Metadata
+            deleted BOOLEAN DEFAULT FALSE,
+            created_at TIMESTAMP,
+            updated_at TIMESTAMP
+        )
+    """)
+    
+    # Tabla: initiator_fields (campos del formulario del iniciador)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS lml_processes.initiator_fields (
+            id SERIAL PRIMARY KEY,
+            process_id VARCHAR(255) REFERENCES lml_processes.main(process_id) ON DELETE CASCADE,
+            
+            field_key VARCHAR(255),
+            field_id VARCHAR(255),
+            field_name VARCHAR(255),
+            
+            -- Evitar duplicados
+            UNIQUE(process_id, field_key)
+        )
+    """)
+    
+    # Tabla: process_documents (documentos asociados al trámite)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS lml_processes.process_documents (
+            id SERIAL PRIMARY KEY,
+            process_id VARCHAR(255) REFERENCES lml_processes.main(process_id) ON DELETE CASCADE,
+            
+            doc_type VARCHAR(50),
+            document_id VARCHAR(255),
+            
+            -- Un documento puede estar en múltiples procesos
+            UNIQUE(process_id, document_id)
+        )
+    """)
+    
+    # Tabla: last_movements (último movimiento, relación 1:1)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS lml_processes.last_movements (
+            id SERIAL PRIMARY KEY,
+            process_id VARCHAR(255) REFERENCES lml_processes. main(process_id) ON DELETE CASCADE UNIQUE,
+            
+            -- Usuario origen (quien envió)
+            origin_user_id VARCHAR(255),
+            origin_user_name VARCHAR(255),
+            
+            -- Destino (usuario/área que recibió)
+            destination_user_id VARCHAR(255),
+            destination_user_name VARCHAR(255),
+            destination_area_name VARCHAR(255),
+            destination_subarea_name VARCHAR(255)
+        )
+    """)
+    
+    # Tabla: movements (historial completo de movimientos)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS lml_processes. movements (
+            id SERIAL PRIMARY KEY,
+            process_id VARCHAR(255) REFERENCES lml_processes.main(process_id) ON DELETE CASCADE,
+            
+            movement_at TIMESTAMP,
+            destination_id VARCHAR(255),
+            destination_type VARCHAR(50)
+        )
+    """)
+    
+    # Índices para queries frecuentes
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_processes_customer 
+        ON lml_processes.main(customer_id);
         
-        conn.commit()
-        print(f"✅ Schema '{schema}' verificado/creado correctamente.")
+        CREATE INDEX IF NOT EXISTS idx_processes_created_by 
+        ON lml_processes. main(created_by_user_id);
         
-    except Exception as e:
-        print(f"❌ Error al configurar schema {schema}: {e}")
-        conn.rollback()
-        raise e
-
+        CREATE INDEX IF NOT EXISTS idx_movements_process 
+        ON lml_processes. movements(process_id);
+    """)
+    
+    print("   ✅ Schema 'lml_processes' creado (5 tablas + 11 índices)")
 
 def main():
     """
-    Función principal que orquesta la creación de toda la estructura.
+    Punto de entrada principal. 
     
-    Orden de ejecución:
-    1. Conectar a PostgreSQL
-    2. Crear tablas compartidas (public.*)
-    3. Crear schemas específicos por colección
-    4. Reportar éxito
+    ORDEN DE EJECUCIÓN:
+    1. lml_users (sin dependencias)
+    2. lml_usersgroups (depende de lml_users. main)
+    3.  Resto (dependen de lml_users.* y lml_usersgroups. *)
     """
-    print("🚀 Iniciando configuración de base de datos PostgreSQL...")
-    print(f"   Base de datos: {config.POSTGRES_CONFIG['dbname']}")
+    print("=" * 80)
+    print("🚀 CONFIGURACIÓN DE BASE DE DATOS PostgreSQL")
+    print("=" * 80)
     
-    conn, cursor = connect_to_postgres()
+    conn = create_connection()
+    if not conn:
+        print("\n❌ No se pudo conectar a la base de datos")
+        return
+    
+    cursor = conn.cursor()
     
     try:
-        # Paso 1: Tablas compartidas
-        setup_shared_tables(cursor, conn)
+        print("\n🔨 Creando estructura de base de datos...")
         
-        # Paso 2: Schema lml_processes
-        setup_lml_processes_schema(cursor, conn)
+        # Orden crítico: fuentes de verdad primero
+        setup_lml_users_schema(cursor)
+        setup_lml_usersgroups_schema(cursor)
+        setup_lml_processes_schema(cursor)
+        setup_lml_listbuilder_schema(cursor)
+        setup_lml_formbuilder_schema(cursor)
         
-        # Paso 3: Schema lml_listbuilder
-        setup_lml_listbuilder_schema(cursor, conn)
-
-        # Paso 4: Schema lml_formbuilder
-        setup_lml_formbuilder_schema(cursor, conn)
-
-
-        print("\n" + "="*60)
-        print("✅ SETUP COMPLETO")
-        print("="*60)
-        print("\nPróximos pasos:")
-        print("  1. Verificar estructura: psql -U usuario -d mesamongo -c '\\dt public.*'")
-        print("  2. Ejecutar migración: python mongomigra.py --collection lml_processes_mesa4core")
+        conn.commit()
+        
+        print("\n" + "=" * 80)
+        print("✅ Base de datos configurada correctamente")
+        print("=" * 80)
+        
+        # Resumen
+        print("\n📊 ESQUEMAS CREADOS:")
+        print("  - lml_users: 6 tablas (1 main + 5 catálogos)")
+        print("  - lml_usersgroups: 2 tablas (1 main + 1 relación N:M)")
+        print("  - lml_processes: 5 tablas y 11 índices")
+        print("  - lml_listbuilder: 9 tablas y 19 índices")
+        print("  - lml_formbuilder: 5 tablas y 8 índices")
         
     except Exception as e:
-        print(f"\n❌ Error inesperado: {e}", file=sys.stderr)
-        sys.exit(1)
-        
+        conn.rollback()
+        print(f"\n❌ Error durante la configuración: {e}")
+        import traceback
+        traceback.print_exc()
     finally:
         cursor.close()
         conn.close()
-        print("\n🔒 Conexión cerrada")
 
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
