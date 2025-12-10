@@ -1,8 +1,16 @@
-r"""
+"""
+
 Migrador para la colección lml_processes_mesa4core.
 
 Implementa la interfaz BaseMigrator para transformar documentos de la
 colección MongoDB 'lml_processes_mesa4core' al schema PostgreSQL 'lml_processes'.
+
+RESPONSABILIDAD:
+
+Este es un migrador de tipo 'consumer', lo que significa que:
+- DEPENDE de lml_users (debe migrarse primero)
+- NO inserta usuarios, solo extrae IDs y valida FKs
+- Consume datos de snapshots (createdBy/updatedBy) para auditoría
 
 Arquitectura:
 - Hereda de BaseMigrator (contrato común)
@@ -10,73 +18,112 @@ Arquitectura:
 - Métodos privados: Lógica específica de transformación
 
 Uso (desde mongomigra.py):
-    migrator = LMLProcessesMigrator(schema='lml_processes')
-    
-    shared = migrator.extract_shared_entities(doc, cursor, caches)
-    data = migrator.extract_data(doc, shared)
-    
-    # Acumular en batches...
-    migrator.insert_batches(batches, cursor)
+- migrator = LmlProcessesMigrator(schema='lml_processes')
+- shared = migrator.extract_shared_entities(doc, cursor, caches)
+- data = migrator.extract_data(doc, shared)
+- # Acumular en batches...
+- migrator.insert_batches(batches, cursor)
+
 """
 
 import config
+from psycopg2.extras import execute_values
 from .base import BaseMigrator
 
 
 class LmlProcessesMigrator(BaseMigrator):
     """
-    Migrador específico para lml_processes_mesa4core.
-    
+    Migrador específico para lml_processes_mesa4core. 
     Transforma documentos con estructura de procesos/trámites desde MongoDB
     a un modelo relacional normalizado en PostgreSQL.
-    
-    Tablas destino:
-    - {schema}.main: Registro principal del proceso
-    - {schema}.movements: Historial de movimientos (1:N)
-    - {schema}.initiator_fields: Campos dinámicos del iniciador (1:N)
-    - {schema}.process_documents: Documentos asociados (1:N)
-    - {schema}.last_movements: Último movimiento (1:1)
-    
-    Attributes:
-        schema (str): Nombre del schema en PostgreSQL ('lml_processes')
     """
     
     def __init__(self, schema='lml_processes'):
         """
         Constructor del migrador.
-        
         Args:
             schema: Nombre del schema destino en PostgreSQL
         """
         super().__init__(schema)
+        # Cola en memoria para acumular usuarios fantasmas antes de insertar en lote
+        self.ghost_users_queue = []
     
     # =========================================================================
-    # MÉTODOS PÚBLICOS (INTERFAZ REQUERIDA)
+    # MÉTODOS PÚBLICOS - EXTRACCIÓN Y CACHÉ
     # =========================================================================
     
     def extract_shared_entities(self, doc, cursor, caches):
         """
-        Extrae y procesa entidades compartidas (public.*).
-        
-        Implementa interfaz de BaseMigrator. Ver docstring en base.py para detalles.
+        Extrae IDs. Si falta un usuario, lo guarda en memoria (cola) para insertarlo después.
         """
-        result = {
-            'created_by_user_id': self._extract_user_data(doc.get('createdBy'), cursor, caches),
-            'updated_by_user_id': self._extract_user_data(doc.get('updatedBy'), cursor, caches),
+        # A. Cargar caché inicial de usuarios (Solo la primera vez)
+        # VERIFICADO: Usa lml_users.main
+        if 'valid_user_ids' not in caches:
+            try:
+                cursor.execute("SELECT id FROM lml_users.main")
+                caches['valid_user_ids'] = {row[0] for row in cursor.fetchall()}
+            except Exception:
+                caches['valid_user_ids'] = set()
+
+        valid_users = caches['valid_user_ids']
+
+        # B. Procesar createdBy/updatedBy
+        return {
+            'created_by_user_id': self._process_ghost_user(doc.get('createdBy'), valid_users),
+            'updated_by_user_id': self._process_ghost_user(doc.get('updatedBy'), valid_users),
             'customer_id': doc.get('customerId')
         }
+
+    def _process_ghost_user(self, snapshot, valid_users_set):
+        """
+        Verifica si el usuario existe. Si no, extrae sus datos y lo agrega a la cola de espera.
+        """
+        if not snapshot or not isinstance(snapshot, dict):
+            return None
         
-        # Procesar customer
-        self._extract_customer_data(result['customer_id'], cursor, caches)
+        user_data = snapshot.get('user', {})
+        user_id = None
         
-        return result
+        # Extracción del ID
+        if isinstance(user_data, (str, int)):
+            user_id = str(user_data)
+        elif isinstance(user_data, dict):
+            user_id = user_data.get('id') or user_data.get('_id')
+            if isinstance(user_id, dict): 
+                user_id = user_id.get('$oid')
+        
+        if not user_id: return None
+        user_id = str(user_id)
+
+        # Filtro de basura (IDs muy cortos)
+        if len(user_id) < 5: return None
+
+        # --- LÓGICA CORE: COMPARACIÓN EN MEMORIA ---
+        if user_id not in valid_users_set:
+            
+            # Preparamos datos para restaurar
+            firstname = None
+            lastname = None
+            email = None
+            username = None
+            
+            if isinstance(user_data, dict):
+                firstname = user_data.get('firstname') or user_data.get('firstName') or 'Restored'
+                lastname = user_data.get('lastname') or user_data.get('lastName') or 'User'
+                email = user_data.get('email')
+                username = user_data.get('username') or user_data.get('userName')
+
+            # 1. Agregamos a la COLA
+            self.ghost_users_queue.append((user_id, firstname, lastname, email, username))
+            
+            # 2. Agregamos al SET inmediatamente
+            valid_users_set.add(user_id)
+            
+        return user_id
     
     def extract_data(self, doc, shared_entities):
         """
         Extrae todos los datos del documento en estructura normalizada.
-        
-        Implementa interfaz de BaseMigrator. Retorna estructura compatible
-        con initialize_batches() e insert_batches().
         """
         process_id = self.get_primary_key_from_doc(doc)
         
@@ -88,17 +135,44 @@ class LmlProcessesMigrator(BaseMigrator):
             'related': {
                 'movements': self._extract_movements(doc, process_id),
                 'initiator_fields': self._extract_initiator_fields(doc, process_id),
-                'documents': self._extract_documents(doc, process_id),
+                'process_documents': self._extract_documents(doc, process_id),
                 'last_movements': [last_movement] if last_movement else []
             }
         }
     
-    def insert_batches(self, batches, cursor):
+    # =========================================================================
+    # MÉTODOS PÚBLICOS - INSERCIÓN (OPTIMIZADA)
+    # =========================================================================
+
+    def insert_batches(self, batches, cursor, caches=None):
         """
-        Inserta todos los batches acumulados en PostgreSQL.
+        1. Inserta usuarios fantasmas acumulados (Bulk Insert).
+        2. Inserta la data del formbuilder.
+        """
+        # --- PASO CRÍTICO: Insertar usuarios fantasmas pendientes ---
+        if self.ghost_users_queue:
+            try:
+                execute_values(
+                    cursor,
+                    """
+                    INSERT INTO lml_users.main 
+                    (id, firstname, lastname, email, username, deleted, created_at, updated_at)
+                    VALUES %s
+                    ON CONFLICT (id) DO NOTHING
+                    """,
+                    self.ghost_users_queue,
+                    template="(%s, %s, %s, %s, %s, TRUE, NOW(), NOW())",
+                    page_size=1000
+                )
+
+                if caches and 'valid_user_ids' in caches:
+                    caches['valid_user_ids'].update([u[0] for u in self.ghost_users_queue])
+
+                self.ghost_users_queue = []
+            except Exception as e:
+                print(f"   ❌ Error insertando lote de ghost users: {e}")
+        # --- Inserción Normal ---
         
-        Implementa interfaz de BaseMigrator.
-        """
         # Insertar tabla main
         if batches['main']:
             self._insert_main_batch(batches['main'], cursor)
@@ -111,174 +185,24 @@ class LmlProcessesMigrator(BaseMigrator):
                 insert_method(records, cursor)
     
     def initialize_batches(self):
-        """
-        Retorna estructura vacía para acumular batches.
-        
-        Implementa interfaz de BaseMigrator. La estructura retornada es
-        compatible con extract_data() e insert_batches().
-        """
         return {
             'main': [],
             'related': {
                 'movements': [],
                 'initiator_fields': [],
-                'documents': [],
+                'process_documents': [],
                 'last_movements': []
             }
         }
     
     def get_primary_key_from_doc(self, doc):
-        """
-        Extrae el process_id desde el documento MongoDB.
-        
-        Implementa interfaz de BaseMigrator.
-        """
         return str(doc.get('_id'))
     
     # =========================================================================
-    # MÉTODOS PRIVADOS (IMPLEMENTACIÓN INTERNA)
+    # MÉTODOS PRIVADOS: EXTRACCIÓN DE DATOS (SIN CAMBIOS LÓGICOS)
     # =========================================================================
     
-    def _extract_user_data(self, user_obj, cursor, caches):
-        """
-        Extrae y normaliza datos de usuario desde un objeto user anidado.
-        
-        Esta función procesa la estructura típica de usuarios en lml_processes:
-        
-            {
-              "user": {
-                "id": "USR001",
-                "email": "usuario@ejemplo.com",
-                "area": { "id": "AREA01", "name": "Operaciones" },
-                "subarea": { "id": "SUB01", "name": "Logística" },
-                "role": { "id": "ROLE01", "name": "Gerente" },
-                "groups": [{ "id": "GRP01", "name": "Admins" }]
-              }
-            }
-        
-        Args:
-            user_obj: Objeto completo del tipo {"user": {...}} desde Mongo
-            cursor: Cursor de psycopg2
-            caches: Dict de sets para tracking
-            
-        Returns:
-            str|None: user_id si se procesó, None si inválido
-        """
-        if not user_obj or 'user' not in user_obj or not user_obj['user']:
-            return None
-        
-        user = user_obj['user']
-        user_id = user.get('id')
-        
-        if not user_id:
-            return None
-        
-        # Optimización: Si ya procesamos este usuario, retornar inmediatamente
-        if user_id in caches['users']:
-            return user_id
-        
-        tables = config.TABLE_NAMES
-        
-        # Procesar Area (si existe y no está en caché)
-        if user.get('area') and user['area'].get('id'):
-            area_id = user['area']['id']
-            if area_id not in caches['areas']:
-                cursor.execute(
-                    f"INSERT INTO public.{tables['areas']} (id, name) VALUES (%s, %s) ON CONFLICT (id) DO NOTHING;",
-                    (area_id, user['area'].get('name'))
-                )
-                caches['areas'].add(area_id)
-        
-        # Procesar Subarea
-        if user.get('subarea') and user['subarea'].get('id'):
-            subarea_id = user['subarea']['id']
-            if subarea_id not in caches['subareas']:
-                cursor.execute(
-                    f"INSERT INTO public.{tables['subareas']} (id, name) VALUES (%s, %s) ON CONFLICT (id) DO NOTHING;",
-                    (subarea_id, user['subarea'].get('name'))
-                )
-                caches['subareas'].add(subarea_id)
-        
-        # Procesar Role
-        if user.get('role') and user['role'].get('id'):
-            role_id = user['role']['id']
-            if role_id not in caches['roles']:
-                cursor.execute(
-                    f"INSERT INTO public.{tables['roles']} (id, name) VALUES (%s, %s) ON CONFLICT (id) DO NOTHING;",
-                    (role_id, user['role'].get('name'))
-                )
-                caches['roles'].add(role_id)
-        
-        # Insertar User principal
-        cursor.execute(
-            f"""INSERT INTO public.{tables['users']} 
-                (id, email, firstname, lastname, area_id, subarea_id, role_id) 
-                VALUES (%s, %s, %s, %s, %s, %s, %s) 
-                ON CONFLICT (id) DO NOTHING;""",
-            (
-                user_id,
-                user.get('email'),
-                user.get('firstname'),
-                user.get('lastname'),
-                user.get('area', {}).get('id'),
-                user.get('subarea', {}).get('id'),
-                user.get('role', {}).get('id')
-            )
-        )
-        caches['users'].add(user_id)
-        
-        # Procesar Groups y relación N:M con user
-        if user.get('groups'):
-            for group in user['groups']:
-                if group and group.get('id'):
-                    group_id = group['id']
-                    
-                    # Insertar group si no existe en caché
-                    if group_id not in caches['groups']:
-                        cursor.execute(
-                            f"INSERT INTO public.{tables['groups']} (id, name) VALUES (%s, %s) ON CONFLICT (id) DO NOTHING;",
-                            (group_id, group.get('name'))
-                        )
-                        caches['groups'].add(group_id)
-                    
-                    # Insertar relación user-group
-                    cursor.execute(
-                        f"INSERT INTO public.{tables['user_groups']} (user_id, group_id) VALUES (%s, %s) ON CONFLICT DO NOTHING;",
-                        (user_id, group_id)
-                    )
-        
-        return user_id
-    
-    def _extract_customer_data(self, customer_id, cursor, caches):
-        """
-        Inserta un customer_id en public.customers si no fue procesado.
-        
-        Args:
-            customer_id: ID del cliente desde MongoDB
-            cursor: Cursor de psycopg2
-            caches: Dict de sets
-        """
-        if not customer_id or customer_id in caches['customers']:
-            return
-        
-        tables = config.TABLE_NAMES
-        cursor.execute(
-            f"INSERT INTO public.{tables['customers']} (id) VALUES (%s) ON CONFLICT (id) DO NOTHING;",
-            (customer_id,)
-        )
-        caches['customers'].add(customer_id)
-    
     def _extract_main_record(self, doc, shared_entities):
-        """
-        Extrae el registro principal para la tabla main.
-        
-        Args:
-            doc: Documento de MongoDB
-            shared_entities: Dict con IDs de entidades compartidas
-            
-        Returns:
-            tuple: Valores en orden de columnas de lml_processes.main
-        """
         process_id = self.get_primary_key_from_doc(doc)
         starter = doc.get('processStarter', {})
         
@@ -302,16 +226,6 @@ class LmlProcessesMigrator(BaseMigrator):
         )
     
     def _extract_movements(self, doc, process_id):
-        """
-        Extrae la lista de movimientos del documento.
-        
-        Args:
-            doc: Documento de MongoDB
-            process_id: ID del proceso
-            
-        Returns:
-            list[tuple]: Lista de movimientos
-        """
         movements = []
         if doc.get('movements'):
             for movement in doc['movements']:
@@ -324,16 +238,6 @@ class LmlProcessesMigrator(BaseMigrator):
         return movements
     
     def _extract_initiator_fields(self, doc, process_id):
-        """
-        Extrae los campos dinámicos del iniciador del proceso.
-        
-        Args:
-            doc: Documento de MongoDB
-            process_id: ID del proceso
-            
-        Returns:
-            list[tuple]: Lista de campos
-        """
         fields = []
         if doc.get('initiatorFields'):
             for key, value in doc.get('initiatorFields').items():
@@ -347,16 +251,6 @@ class LmlProcessesMigrator(BaseMigrator):
         return fields
     
     def _extract_documents(self, doc, process_id):
-        """
-        Extrae documentos externos e internos asociados al proceso.
-        
-        Args:
-            doc: Documento de MongoDB
-            process_id: ID del proceso
-            
-        Returns:
-            list[tuple]: Lista de documentos
-        """
         documents = []
         
         # Documentos externos
@@ -382,16 +276,6 @@ class LmlProcessesMigrator(BaseMigrator):
         return documents
     
     def _extract_last_movement(self, doc, process_id):
-        """
-        Extrae el último movimiento del proceso (relación 1:1).
-        
-        Args:
-            doc: Documento de MongoDB
-            process_id: ID del proceso
-            
-        Returns:
-            tuple|None: Datos del último movimiento o None
-        """
         if not doc.get('lastMovement'):
             return None
         
@@ -412,51 +296,62 @@ class LmlProcessesMigrator(BaseMigrator):
             dest_user.get('subarea', {}).get('name')
         )
     
+    # =========================================================================
+    # MÉTODOS PRIVADOS: INSERCIÓN (OPTIMIZADA CON execute_values)
+    # =========================================================================
+    
     def _insert_main_batch(self, batch, cursor):
-        """
-        Inserta batch de registros principales en la tabla main.
-        
-        Args:
-            batch: Lista de tuples de _extract_main_record()
-            cursor: Cursor de psycopg2
-        """
-        sql = f"""
+        execute_values(
+            cursor,
+            f"""
             INSERT INTO {self.schema}.main 
             (process_id, process_number, process_type_name, process_address, 
              process_type_id, customer_id, deleted, created_at, updated_at, 
              process_date, lumbre_status_name, starter_id, starter_name, 
              starter_type, created_by_user_id, updated_by_user_id)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-        """
-        cursor.executemany(sql, batch)
+            VALUES %s
+            ON CONFLICT (process_id) DO NOTHING
+            """,
+            batch,
+            template="(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            page_size=1000
+        )
     
     def _insert_movements_batch(self, batch, cursor):
-        """Inserta batch de movimientos."""
-        cursor.executemany(
-            f"INSERT INTO {self.schema}.movements (process_id, movement_at, destination_id, destination_type) VALUES (%s,%s,%s,%s)",
-            batch
+        execute_values(
+            cursor,
+            f"INSERT INTO {self.schema}.movements (process_id, movement_at, destination_id, destination_type) VALUES %s",
+            batch,
+            template="(%s,%s,%s,%s)",
+            page_size=1000
         )
     
     def _insert_initiator_fields_batch(self, batch, cursor):
-        """Inserta batch de initiator fields."""
-        cursor.executemany(
-            f"INSERT INTO {self.schema}.initiator_fields (process_id, field_key, field_id, field_name) VALUES (%s,%s,%s,%s)",
-            batch
+        execute_values(
+            cursor,
+            f"INSERT INTO {self.schema}.initiator_fields (process_id, field_key, field_id, field_name) VALUES %s",
+            batch,
+            template="(%s,%s,%s,%s)",
+            page_size=1000
         )
     
-    def _insert_documents_batch(self, batch, cursor):
-        """Inserta batch de documentos."""
-        cursor.executemany(
-            f"INSERT INTO {self.schema}.process_documents (process_id, doc_type, document_id) VALUES (%s,%s,%s)",
-            batch
+    def _insert_process_documents_batch(self, batch, cursor):
+        execute_values(
+            cursor,
+            f"INSERT INTO {self.schema}.process_documents (process_id, doc_type, document_id) VALUES %s",
+            batch,
+            template="(%s,%s,%s)",
+            page_size=1000
         )
     
     def _insert_last_movements_batch(self, batch, cursor):
-        """Inserta batch de últimos movimientos."""
-        cursor.executemany(
+        execute_values(
+            cursor,
             f"""INSERT INTO {self.schema}.last_movements 
                 (process_id, origin_user_id, origin_user_name, destination_user_id, 
                  destination_user_name, destination_area_name, destination_subarea_name) 
-                VALUES (%s,%s,%s,%s,%s,%s,%s)""",
-            batch
+                VALUES %s""",
+            batch,
+            template="(%s,%s,%s,%s,%s,%s,%s)",
+            page_size=1000
         )

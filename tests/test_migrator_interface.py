@@ -1,5 +1,5 @@
 """
-Test de interfaz para migradores.
+Test de interfaz para migradores. 
 
 Valida que todos los migradores:
 1. Heredan de BaseMigrator
@@ -12,13 +12,14 @@ import os
 import inspect
 
 # Agregar project root al path
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path. insert(0, os.path. dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from migrators.base import BaseMigrator
+from migrators. base import BaseMigrator
 # --- MIGRADORES REGISTRADOS ---
 from migrators.lml_processes import LmlProcessesMigrator
-from migrators.lml_listbuilder import LmlListbuilderMigrator
-from migrators.lml_formbuilder import LmlFormbuilderMigrator # <--- NUEVO
+from migrators. lml_listbuilder import LmlListbuilderMigrator
+from migrators.lml_formbuilder import LmlFormbuilderMigrator
+from migrators. lml_users import LmlUsersMigrator  # <--- NUEVO
 
 
 def get_migradores_instances():
@@ -26,7 +27,8 @@ def get_migradores_instances():
     return [
         ('LmlProcessesMigrator', LmlProcessesMigrator('lml_processes')),
         ('LmlListbuilderMigrator', LmlListbuilderMigrator('lml_listbuilder')),
-        ('LmlFormbuilderMigrator', LmlFormbuilderMigrator('lml_formbuilder')), # <--- NUEVO
+        ('LmlFormbuilderMigrator', LmlFormbuilderMigrator('lml_formbuilder')),
+        ('LmlUsersMigrator', LmlUsersMigrator('lml_users')),  # <--- NUEVO
     ]
 
 def get_migradores_classes():
@@ -34,7 +36,8 @@ def get_migradores_classes():
     return [
         ('LmlProcessesMigrator', LmlProcessesMigrator),
         ('LmlListbuilderMigrator', LmlListbuilderMigrator),
-        ('LmlFormbuilderMigrator', LmlFormbuilderMigrator), # <--- NUEVO
+        ('LmlFormbuilderMigrator', LmlFormbuilderMigrator),
+        ('LmlUsersMigrator', LmlUsersMigrator),  # <--- NUEVO
     ]
 
 
@@ -74,13 +77,13 @@ def test_required_methods():
         
         for method_name in required_methods:
             if not hasattr(migrator_class, method_name):
-                errors.append(f"{name} no implementa {method_name}()")
+                errors. append(f"{name} no implementa {method_name}()")
                 print(f"      ❌ {method_name}()")
             else:
                 method = getattr(migrator_class, method_name)
                 # Verificar que no es el método abstracto de la base
-                if method.__qualname__.startswith('BaseMigrator'):
-                    errors.append(f"{name}.{method_name}() no está implementado (usa abstracto)")
+                if method.__qualname__. startswith('BaseMigrator'):
+                    errors.append(f"{name}. {method_name}() no está implementado (usa abstracto)")
                     print(f"      ❌ {method_name}() (abstracto)")
                 else:
                     print(f"      ✅ {method_name}()")
@@ -99,24 +102,25 @@ def test_initialize_batches_structure():
         batches = migrator.initialize_batches()
         
         if not isinstance(batches, dict):
-            errors.append(f"{name}.initialize_batches() no retorna dict")
+            errors.append(f"{name}. initialize_batches() no retorna dict")
             print(f"   ❌ {name}: No retorna dict")
             continue
         
         if 'main' not in batches:
-            errors.append(f"{name}.initialize_batches() no tiene key 'main'")
+            errors.append(f"{name}. initialize_batches() no tiene key 'main'")
             print(f"   ❌ {name}: Falta key 'main'")
         
         if 'related' not in batches:
-            errors.append(f"{name}.initialize_batches() no tiene key 'related'")
+            errors.append(f"{name}. initialize_batches() no tiene key 'related'")
             print(f"   ❌ {name}: Falta key 'related'")
         
-        if not isinstance(batches.get('related'), dict):
+        if not isinstance(batches. get('related'), dict):
             errors.append(f"{name}.initialize_batches()['related'] no es dict")
             print(f"   ❌ {name}: 'related' no es dict")
         
         if len(errors) == 0:
             print(f"   ✅ {name}: Estructura correcta")
+            print(f"      Related tables: {list(batches['related'].keys())}")
     
     return len(errors) == 0, errors
 

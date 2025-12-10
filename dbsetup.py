@@ -9,11 +9,11 @@ ARQUITECTURA:
 - lml_*: Schemas por colección MongoDB (solo FKs entre ellos)
 
 CONVENCIÓN DE NAMING:
-Colección MongoDB              Schema PostgreSQL
---------------------          -------------------
-lml_users_mesa4core       →   lml_users
-lml_usersgroups_mesa4core →   lml_usersgroups
-lml_*_mesa4core           →   lml_*
+Colección MongoDB           Schema PostgreSQL
+--------------------        -------------------
+lml_users_mesa4core       →  lml_users
+lml_usersgroups_mesa4core →  lml_usersgroups
+lml_*_mesa4core           →  lml_*
 """
 
 import psycopg2
@@ -41,7 +41,7 @@ def setup_lml_users_schema(cursor):
     
     DECISIONES DE DISEÑO:
     - password puede ser NULL (usuarios SSO/externos)
-    - position_id y signaturetype_id son NULL (solo 5. 5% cobertura)
+    - position_id y signaturetype_id son NULL (solo 5.5% cobertura)
     - postgres_id descartado (campo legacy)
     - privileges NO migrados (no existen en nivel raíz de documentos)
     """
@@ -147,7 +147,7 @@ def setup_lml_usersgroups_schema(cursor):
     DECISIONES DE DISEÑO:
     - members usa ON DELETE CASCADE
     - Índice en members(user_id) para query "grupos de un usuario"
-    - pases NO migrado (43. 5% cobertura, propósito poco claro)
+    - pases NO migrado (43.5% cobertura, propósito poco claro)
     """
     print("\n   🔧 Creando schema 'lml_usersgroups'...")
     
@@ -155,7 +155,7 @@ def setup_lml_usersgroups_schema(cursor):
     cursor.execute("CREATE SCHEMA IF NOT EXISTS lml_usersgroups")
     
     # Tabla principal: Grupos
-    cursor. execute("""
+    cursor.execute("""
         CREATE TABLE IF NOT EXISTS lml_usersgroups.main (
             id VARCHAR(255) PRIMARY KEY,
             name VARCHAR(500) NOT NULL,
@@ -180,7 +180,7 @@ def setup_lml_usersgroups_schema(cursor):
     
     # Tabla N:M: Membresías
     cursor.execute("""
-        CREATE TABLE IF NOT EXISTS lml_usersgroups. members (
+        CREATE TABLE IF NOT EXISTS lml_usersgroups.members (
             group_id VARCHAR(255) REFERENCES lml_usersgroups.main(id) ON DELETE CASCADE,
             user_id VARCHAR(255) REFERENCES lml_users.main(id) ON DELETE CASCADE,
             PRIMARY KEY (group_id, user_id)
@@ -240,7 +240,7 @@ def setup_lml_formbuilder_schema(cursor):
             
             -- FKs actualizadas
             customer_id VARCHAR(255),
-            created_by_user_id VARCHAR(255) REFERENCES lml_users. main(id),
+            created_by_user_id VARCHAR(255) REFERENCES lml_users.main(id),
             updated_by_user_id VARCHAR(255) REFERENCES lml_users.main(id)
         )
     """)
@@ -275,7 +275,7 @@ def setup_lml_formbuilder_schema(cursor):
     # Tablas de permisos por tipo de operación
     for table_suffix in ['allow_access', 'allow_create', 'allow_update']:
         cursor.execute(f"""
-            CREATE TABLE IF NOT EXISTS lml_formbuilder. {table_suffix} (
+            CREATE TABLE IF NOT EXISTS lml_formbuilder.{table_suffix} (
                 id SERIAL PRIMARY KEY,
                 formbuilder_id VARCHAR(255) REFERENCES lml_formbuilder.main(formbuilder_id) ON DELETE CASCADE,
                 
@@ -457,7 +457,7 @@ def setup_lml_listbuilder_schema(cursor):
     """)
     
     # Tabla: search_fields_to_selected
-    cursor. execute("""
+    cursor.execute("""
         CREATE TABLE IF NOT EXISTS lml_listbuilder.search_fields_to_selected (
             id SERIAL PRIMARY KEY,
             listbuilder_id VARCHAR(255) REFERENCES lml_listbuilder.main(listbuilder_id) ON DELETE CASCADE,
@@ -470,7 +470,7 @@ def setup_lml_listbuilder_schema(cursor):
     """)
     
     # Tabla: privileges
-    cursor. execute("""
+    cursor.execute("""
         CREATE TABLE IF NOT EXISTS lml_listbuilder.privileges (
             id SERIAL PRIMARY KEY,
             listbuilder_id VARCHAR(255) REFERENCES lml_listbuilder.main(listbuilder_id) ON DELETE CASCADE,
@@ -568,7 +568,7 @@ def setup_lml_processes_schema(cursor):
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS lml_processes.last_movements (
             id SERIAL PRIMARY KEY,
-            process_id VARCHAR(255) REFERENCES lml_processes. main(process_id) ON DELETE CASCADE UNIQUE,
+            process_id VARCHAR(255) REFERENCES lml_processes.main(process_id) ON DELETE CASCADE UNIQUE,
             
             -- Usuario origen (quien envió)
             origin_user_id VARCHAR(255),
@@ -584,7 +584,7 @@ def setup_lml_processes_schema(cursor):
     
     # Tabla: movements (historial completo de movimientos)
     cursor.execute("""
-        CREATE TABLE IF NOT EXISTS lml_processes. movements (
+        CREATE TABLE IF NOT EXISTS lml_processes.movements (
             id SERIAL PRIMARY KEY,
             process_id VARCHAR(255) REFERENCES lml_processes.main(process_id) ON DELETE CASCADE,
             
@@ -600,10 +600,10 @@ def setup_lml_processes_schema(cursor):
         ON lml_processes.main(customer_id);
         
         CREATE INDEX IF NOT EXISTS idx_processes_created_by 
-        ON lml_processes. main(created_by_user_id);
+        ON lml_processes.main(created_by_user_id);
         
         CREATE INDEX IF NOT EXISTS idx_movements_process 
-        ON lml_processes. movements(process_id);
+        ON lml_processes.movements(process_id);
     """)
     
     print("   ✅ Schema 'lml_processes' creado (5 tablas + 11 índices)")
@@ -614,8 +614,8 @@ def main():
     
     ORDEN DE EJECUCIÓN:
     1. lml_users (sin dependencias)
-    2. lml_usersgroups (depende de lml_users. main)
-    3.  Resto (dependen de lml_users.* y lml_usersgroups. *)
+    2. lml_usersgroups (depende de lml_users.main)
+    3. Resto (dependen de lml_users.* y lml_usersgroups.*)
     """
     print("=" * 80)
     print("🚀 CONFIGURACIÓN DE BASE DE DATOS PostgreSQL")
@@ -646,11 +646,11 @@ def main():
         
         # Resumen
         print("\n📊 ESQUEMAS CREADOS:")
-        print("  - lml_users: 6 tablas (1 main + 5 catálogos)")
-        print("  - lml_usersgroups: 2 tablas (1 main + 1 relación N:M)")
-        print("  - lml_processes: 5 tablas y 11 índices")
-        print("  - lml_listbuilder: 9 tablas y 19 índices")
-        print("  - lml_formbuilder: 5 tablas y 8 índices")
+        print("   - lml_users: 6 tablas (1 main + 5 catálogos)")
+        print("   - lml_usersgroups: 2 tablas (1 main + 1 relación N:M)")
+        print("   - lml_processes: 5 tablas y 11 índices")
+        print("   - lml_listbuilder: 9 tablas y 19 índices")
+        print("   - lml_formbuilder: 5 tablas y 8 índices")
         
     except Exception as e:
         conn.rollback()

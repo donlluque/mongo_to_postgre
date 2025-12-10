@@ -1,11 +1,17 @@
 """
-Migrador para la colección lml_listbuilder_mesa4core.
+Migrador para la colección lml_listbuilder_mesa4core. 
 
 Implementa la interfaz BaseMigrator para transformar configuraciones de UI
-desde MongoDB al schema PostgreSQL 'lml_listbuilder'.
+desde MongoDB al schema PostgreSQL 'lml_listbuilder'. 
+
+RESPONSABILIDAD:
+Este es un migrador de tipo 'consumer', lo que significa que:
+- DEPENDE de lml_users (debe migrarse primero)
+- NO inserta usuarios, solo extrae IDs y valida FKs
+- Consume datos de snapshots (createdBy/updatedBy) para auditoría
 
 A diferencia de lml_processes (datos transaccionales), esta colección almacena
-metadata de cómo se renderizan las pantallas de listados en el frontend.
+metadata de cómo se renderizan las pantallas de listados en el frontend. 
 
 Tablas destino:
 - {schema}.main: Configuración principal del listado
@@ -21,6 +27,7 @@ Tablas destino:
 
 import json
 from datetime import datetime
+from psycopg2.extras import execute_values
 from .base import BaseMigrator
 import config
 
@@ -34,18 +41,19 @@ class LmlListbuilderMigrator(BaseMigrator):
     
     Características:
     - Volumen bajo (~200 docs)
-    - 8 tablas relacionadas (alta normalización)
+    - 9 tablas relacionadas (alta normalización)
     - Múltiples campos JSONB para flexibilidad
     """
     
     def __init__(self, schema='lml_listbuilder'):
         """
         Constructor del migrador.
-        
         Args:
             schema: Nombre del schema destino en PostgreSQL
         """
         super().__init__(schema)
+        # Cola en memoria para acumular usuarios fantasmas antes de insertar en lote
+        self.ghost_users_queue = []
     
     # =========================================================================
     # MÉTODOS PÚBLICOS (INTERFAZ REQUERIDA)
@@ -53,43 +61,25 @@ class LmlListbuilderMigrator(BaseMigrator):
     
     def extract_shared_entities(self, doc, cursor, caches):
         """
-        Extrae y procesa entidades compartidas (public.*).
-        
-        Implementa interfaz de BaseMigrator.
+        Extrae IDs. Si falta un usuario, lo guarda en memoria (cola) para insertarlo después.
         """
-        result = {
-            'customer_id': None,
-            'created_by_user_id': None,
-            'updated_by_user_id': None
+        # A. Cargar caché inicial de usuarios (Solo la primera vez, optimización masiva)
+        if 'valid_user_ids' not in caches:
+            try:
+                # Cargamos TODOS los IDs existentes en RAM para comparar rápido
+                cursor.execute("SELECT id FROM lml_users.main")
+                caches['valid_user_ids'] = {row[0] for row in cursor.fetchall()}
+            except Exception:
+                caches['valid_user_ids'] = set()
+
+        valid_users = caches['valid_user_ids']
+
+        # B. Procesar createdBy/updatedBy usando la nueva lógica
+        return {
+            'created_by_user_id': self._process_ghost_user(doc.get('createdBy'), valid_users),
+            'updated_by_user_id': self._process_ghost_user(doc.get('updatedBy'), valid_users),
+            'customer_id': doc.get('customerId')
         }
-        
-        # Customer ID (presente en todos los docs)
-        customer_id = doc.get('customerId')
-        if customer_id and customer_id not in caches['customers']:
-            cursor.execute(
-                "INSERT INTO public.customers (id) VALUES (%s) ON CONFLICT (id) DO NOTHING",
-                (customer_id,)
-            )
-            caches['customers'].add(customer_id)
-        result['customer_id'] = customer_id
-        
-        # CreatedBy user
-        created_by = doc.get('createdBy', {})
-        if created_by:
-            user_id = self._extract_user_id_from_action(created_by)
-            if user_id:
-                self._insert_user_if_needed(created_by.get('user', {}), cursor, caches)
-                result['created_by_user_id'] = str(user_id)
-        
-        # UpdatedBy user
-        updated_by = doc.get('updatedBy', {})
-        if updated_by:
-            user_id = self._extract_user_id_from_action(updated_by)
-            if user_id:
-                self._insert_user_if_needed(updated_by.get('user', {}), cursor, caches)
-                result['updated_by_user_id'] = str(user_id)
-        
-        return result
     
     def extract_data(self, doc, shared_entities):
         """
@@ -113,12 +103,35 @@ class LmlListbuilderMigrator(BaseMigrator):
             }
         }
     
-    def insert_batches(self, batches, cursor):
+    def insert_batches(self, batches, cursor, caches=None):
         """
-        Inserta todos los batches acumulados en PostgreSQL.
-        
-        Implementa interfaz de BaseMigrator.
+        1. Inserta usuarios fantasmas acumulados (Bulk Insert).
+        2. Inserta la data del formbuilder.
         """
+        # --- PASO CRÍTICO: Insertar usuarios fantasmas pendientes ---
+        if self.ghost_users_queue:
+            try:
+                execute_values(
+                    cursor,
+                    """
+                    INSERT INTO lml_users.main 
+                    (id, firstname, lastname, email, username, deleted, created_at, updated_at)
+                    VALUES %s
+                    ON CONFLICT (id) DO NOTHING
+                    """,
+                    self.ghost_users_queue,
+                    template="(%s, %s, %s, %s, %s, TRUE, NOW(), NOW())",
+                    page_size=1000
+                )
+
+                if caches and 'valid_user_ids' in caches:
+                    caches['valid_user_ids'].update([u[0] for u in self.ghost_users_queue])
+
+                self.ghost_users_queue = []
+            except Exception as e:
+                print(f"   ❌ Error insertando lote de ghost users: {e}")
+
+        # --- Inserción Normal con execute_values ---
         # Insertar tabla main
         if batches['main']:
             self._insert_main_batch(batches['main'], cursor)
@@ -155,7 +168,7 @@ class LmlListbuilderMigrator(BaseMigrator):
         """
         Extrae el listbuilder_id desde el documento MongoDB.
         
-        Implementa interfaz de BaseMigrator.
+        Implementa interfaz de BaseMigrador.
         """
         _id = doc.get('_id')
         if isinstance(_id, dict) and '$oid' in _id:
@@ -163,99 +176,60 @@ class LmlListbuilderMigrator(BaseMigrator):
         return str(_id)
     
     # =========================================================================
-    # MÉTODOS PRIVADOS - PROCESAMIENTO DE USUARIOS
+    # MÉTODOS PRIVADOS: EXTRACCIÓN DE IDS
     # =========================================================================
     
-    def _extract_user_id_from_action(self, action_obj):
+    def _process_ghost_user(self, snapshot, valid_users_set):
         """
-        Extrae el ID de usuario de un objeto createdBy/updatedBy.
-        
-        La estructura puede variar entre documentos.
+        Verifica si el usuario existe. Si no, extrae sus datos y lo agrega a la cola de espera.
         """
-        if not action_obj or not isinstance(action_obj, dict):
+        if not snapshot or not isinstance(snapshot, dict):
             return None
         
-        user = action_obj.get('user', {})
+        user_data = snapshot.get('user', {})
+        user_id = None
         
-        # Caso 1: user es directamente un string/int (ID)
-        if isinstance(user, (str, int)):
-            return user
+        # --- Extracción del ID ---
+        if isinstance(user_data, (str, int)):
+            user_id = str(user_data)
+        elif isinstance(user_data, dict):
+            user_id = user_data.get('id') or user_data.get('_id')
+            if isinstance(user_id, dict): 
+                user_id = user_id.get('$oid')
         
-        # Caso 2: user es un objeto con campo 'id' o '_id'
-        if isinstance(user, dict):
-            user_id = user.get('id')
-            if user_id:
-                return user_id
+        if not user_id: 
+            return None
             
-            mongo_id = user.get('_id')
-            if mongo_id:
-                if isinstance(mongo_id, dict):
-                    return mongo_id.get('$oid')
-                return mongo_id
-        
-        return None
-    
-    def _insert_user_if_needed(self, user_obj, cursor, caches):
-        """
-        Inserta un usuario en public.users si no existe.
-        
-        Maneja estructura completa con relaciones (area, subarea, role).
-        """
-        if not user_obj or not isinstance(user_obj, dict):
-            return
-        
-        user_id = user_obj.get('id')
-        if not user_id or user_id in caches['users']:
-            return
-        
-        # Extraer relaciones
-        area = user_obj.get('area', {})
-        area_id = area.get('id') if isinstance(area, dict) else None
-        
-        subarea = user_obj.get('subarea', {})
-        subarea_id = subarea.get('id') if isinstance(subarea, dict) else None
-        
-        role = user_obj.get('role', {})
-        role_id = role.get('id') if isinstance(role, dict) else None
-        
-        # Insertar entidades relacionadas
-        if area_id and area_id not in caches['areas']:
-            cursor.execute(
-                "INSERT INTO public.areas (id, name) VALUES (%s, %s) ON CONFLICT (id) DO NOTHING",
-                (area_id, area.get('name'))
-            )
-            caches['areas'].add(area_id)
-        
-        if subarea_id and subarea_id not in caches['subareas']:
-            cursor.execute(
-                "INSERT INTO public.subareas (id, name) VALUES (%s, %s) ON CONFLICT (id) DO NOTHING",
-                (subarea_id, subarea.get('name'))
-            )
-            caches['subareas'].add(subarea_id)
-        
-        if role_id and role_id not in caches['roles']:
-            cursor.execute(
-                "INSERT INTO public.roles (id, name) VALUES (%s, %s) ON CONFLICT (id) DO NOTHING",
-                (role_id, role.get('name'))
-            )
-            caches['roles'].add(role_id)
-        
-        # Insertar usuario
-        cursor.execute("""
-            INSERT INTO public.users (id, email, firstname, lastname, area_id, subarea_id, role_id)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (id) DO NOTHING
-        """, (
-            str(user_id),
-            user_obj.get('email'),
-            user_obj.get('firstname'),
-            user_obj.get('lastname'),
-            area_id,
-            subarea_id,
-            role_id
-        ))
-        
-        caches['users'].add(user_id)
+        user_id = str(user_id)
+
+        # Filtro de basura (IDs muy cortos no sirven)
+        if len(user_id) < 5: 
+            return None
+
+        # --- LÓGICA CORE: COMPARACIÓN EN MEMORIA ---
+        # Si NO está en el set de usuarios válidos, es un fantasma nuevo
+        if user_id not in valid_users_set:
+            
+            # Preparamos los datos para restaurarlo
+            firstname = None
+            lastname = None
+            email = None
+            username = None
+            
+            if isinstance(user_data, dict):
+                firstname = user_data.get('firstname') or user_data.get('firstName') or 'Restored'
+                lastname = user_data.get('lastname') or user_data.get('lastName') or 'User'
+                email = user_data.get('email')
+                username = user_data.get('username') or user_data.get('userName')
+
+            # 1. Agregamos a la COLA para insertar luego todos juntos
+            # NOTA: Marcamos deleted=TRUE para diferenciarlo
+            self.ghost_users_queue.append((user_id, firstname, lastname, email, username))
+            
+            # 2. Agregamos al SET inmediatamente para no duplicarlo en el mismo lote
+            valid_users_set.add(user_id)
+            
+        return user_id
     
     # =========================================================================
     # MÉTODOS PRIVADOS - EXTRACCIÓN DE DATOS
@@ -263,7 +237,7 @@ class LmlListbuilderMigrator(BaseMigrator):
     
     def _extract_main_record(self, doc, shared_entities):
         """
-        Extrae el registro principal para lml_listbuilder.main.
+        Extrae el registro principal para lml_listbuilder.main. 
         
         Campos JSONB se usan para estructura variable (softPermissions, etc).
         """
@@ -342,24 +316,49 @@ class LmlListbuilderMigrator(BaseMigrator):
             mongo_version
         )
     
-    def _parse_mongo_date(self, date_value):
-        """Parsea fechas de MongoDB en múltiples formatos."""
-        if not date_value:
+    def _parse_mongo_date(self, value):
+        """
+        Parsea Mongo Date a datetime de Python.
+        
+        Formatos soportados:
+        - datetime nativo de pymongo
+        - ISO8601 con 'Z': '2021-03-22T07:49:18.242Z'
+        - ISO8601 con timezone: '2022-06-02T13:54:12.273+00:00'
+        - Extended JSON: {'$date': '...'}
+        
+        Args:
+            value: Valor del campo timestamp
+        
+        Returns:
+            datetime|None: Timestamp parseado o None
+        """
+        if not value:
             return None
         
-        # Formato Extended JSON: {'$date': '...'}
-        if isinstance(date_value, dict) and '$date' in date_value:
-            date_value = date_value['$date']
+        try:
+            # Caso 1: Ya es datetime
+            if isinstance(value, datetime):
+                return value
+            
+            # Caso 2: Extended JSON
+            if isinstance(value, dict) and '$date' in value:
+                value = value['$date']
+            
+            # Caso 3: String ISO8601
+            if isinstance(value, str):
+                # Con 'Z' al final
+                if value.endswith('Z'):
+                    if '.' in value:
+                        return datetime.strptime(value, "%Y-%m-%dT%H:%M:%S.%fZ")
+                    else:
+                        return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ")
+                
+                # Con timezone explícito
+                if '+' in value or value.count('-') > 2:
+                    return datetime.fromisoformat(value)
         
-        # String ISO8601
-        if isinstance(date_value, str):
-            try:
-                if '.' in date_value:
-                    return datetime.strptime(date_value, "%Y-%m-%dT%H:%M:%S.%fZ")
-                else:
-                    return datetime.strptime(date_value, "%Y-%m-%dT%H:%M:%SZ")
-            except ValueError:
-                return None
+        except (ValueError, TypeError):
+            return None
         
         return None
     
@@ -510,88 +509,136 @@ class LmlListbuilderMigrator(BaseMigrator):
         return records
     
     # =========================================================================
-    # MÉTODOS PRIVADOS - INSERCIÓN DE DATOS
+    # MÉTODOS PRIVADOS - INSERCIÓN DE DATOS (REFACTORIZADO CON execute_values)
     # =========================================================================
     
     def _insert_main_batch(self, records, cursor):
-        """Inserta batch de registros en lml_listbuilder.main."""
-        cursor.executemany("""
+        """Inserta batch de registros en lml_listbuilder.main usando execute_values."""
+        execute_values(
+            cursor,
+            """
             INSERT INTO lml_listbuilder.main (
                 listbuilder_id, alias, title_list, gql_field, gql_query, gql_variables,
                 mode_table, mode_map, lumbre_internal, lumbre_version, selectable,
                 items_per_page, page, soft_permissions, aggs, meta_search, mode_box_options,
                 created_at, updated_at, created_by_user_id, updated_by_user_id,
                 customer_id, mongo_version
-            ) VALUES (
-                %s, %s, %s, %s, %s, %s,
-                %s, %s, %s, %s, %s,
-                %s, %s, %s, %s, %s, %s,
-                %s, %s, %s, %s,
-                %s, %s
-            )
-        """, records)
+            ) VALUES %s
+            """,
+            records,
+            template="(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            page_size=1000
+        )
     
     def _insert_fields_batch(self, records, cursor):
-        """Inserta batch en lml_listbuilder.fields."""
-        cursor.executemany("""
+        """Inserta batch en lml_listbuilder.fields usando execute_values."""
+        execute_values(
+            cursor,
+            """
             INSERT INTO lml_listbuilder.fields (
                 listbuilder_id, field_key, field_label, sortable, field_order
-            ) VALUES (%s, %s, %s, %s, %s)
-        """, records)
+            ) VALUES %s
+            """,
+            records,
+            template="(%s, %s, %s, %s, %s)",
+            page_size=1000
+        )
     
     def _insert_available_fields_batch(self, records, cursor):
-        """Inserta batch en lml_listbuilder.available_fields."""
-        cursor.executemany("""
+        """Inserta batch en lml_listbuilder.available_fields usando execute_values."""
+        execute_values(
+            cursor,
+            """
             INSERT INTO lml_listbuilder.available_fields (
                 listbuilder_id, field_key, field_label, sortable, field_order
-            ) VALUES (%s, %s, %s, %s, %s)
-        """, records)
+            ) VALUES %s
+            """,
+            records,
+            template="(%s, %s, %s, %s, %s)",
+            page_size=1000
+        )
     
     def _insert_items_batch(self, records, cursor):
-        """Inserta batch en lml_listbuilder.items."""
-        cursor.executemany("""
+        """Inserta batch en lml_listbuilder.items usando execute_values."""
+        execute_values(
+            cursor,
+            """
             INSERT INTO lml_listbuilder.items (
                 listbuilder_id, item_name, item_order
-            ) VALUES (%s, %s, %s)
-        """, records)
+            ) VALUES %s
+            """,
+            records,
+            template="(%s, %s, %s)",
+            page_size=1000
+        )
     
     def _insert_button_links_batch(self, records, cursor):
-        """Inserta batch en lml_listbuilder.button_links."""
-        cursor.executemany("""
+        """Inserta batch en lml_listbuilder.button_links usando execute_values."""
+        execute_values(
+            cursor,
+            """
             INSERT INTO lml_listbuilder.button_links (
                 listbuilder_id, button_value, button_to, button_class,
                 endpoint_to_validate_visibility, show_button, disabled, button_order
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-        """, records)
+            ) VALUES %s
+            """,
+            records,
+            template="(%s, %s, %s, %s, %s, %s, %s, %s)",
+            page_size=1000
+        )
     
     def _insert_path_actions_batch(self, records, cursor):
-        """Inserta batch en lml_listbuilder.path_actions."""
-        cursor.executemany("""
+        """Inserta batch en lml_listbuilder.path_actions usando execute_values."""
+        execute_values(
+            cursor,
+            """
             INSERT INTO lml_listbuilder.path_actions (
                 listbuilder_id, action_to, tooltip, font_awesome_icon, action_order
-            ) VALUES (%s, %s, %s, %s, %s)
-        """, records)
+            ) VALUES %s
+            """,
+            records,
+            template="(%s, %s, %s, %s, %s)",
+            page_size=1000
+        )
     
     def _insert_search_fields_selected_batch(self, records, cursor):
-        """Inserta batch en lml_listbuilder.search_fields_selected."""
-        cursor.executemany("""
+        """Inserta batch en lml_listbuilder.search_fields_selected usando execute_values."""
+        execute_values(
+            cursor,
+            """
             INSERT INTO lml_listbuilder.search_fields_selected (
                 listbuilder_id, field_name, field_order
-            ) VALUES (%s, %s, %s)
-        """, records)
+            ) VALUES %s
+            """,
+            records,
+            template="(%s, %s, %s)",
+            page_size=1000
+        )
     
     def _insert_search_fields_to_selected_batch(self, records, cursor):
-        """Inserta batch en lml_listbuilder.search_fields_to_selected."""
-        cursor.executemany("""
+        """Inserta batch en lml_listbuilder.search_fields_to_selected usando execute_values."""
+        execute_values(
+            cursor,
+            """
             INSERT INTO lml_listbuilder.search_fields_to_selected (
                 listbuilder_id, field_name, field_order
-            ) VALUES (%s, %s, %s)
-        """, records)
+            ) VALUES %s
+            """,
+            records,
+            template="(%s, %s, %s)",
+            page_size=1000
+        )
     
     def _insert_privileges_batch(self, records, cursor):
-        """Inserta batch en lml_listbuilder.privileges."""
-        cursor.executemany("""
+        """Inserta batch en lml_listbuilder.privileges usando execute_values."""
+        execute_values(
+            cursor,
+            """
             INSERT INTO lml_listbuilder.privileges (
                 listbuilder_id, privilege_id, privilege_name, privilege_code
-            ) VALUES (%s, %s, %s, %s)
-        """, records)
+            ) VALUES %s
+            """,
+            records,
+            template="(%s, %s, %s, %s)",
+            page_size=1000
+        )

@@ -4,6 +4,12 @@ Migrador para la colección lml_formbuilder_mesa4core.
 Implementa la interfaz BaseMigrator para transformar configuraciones de formularios
 dinámicos desde MongoDB al schema PostgreSQL 'lml_formbuilder'. 
 
+RESPONSABILIDAD:
+Este es un migrador de tipo 'consumer', lo que significa que:
+- DEPENDE de lml_users (debe migrarse primero)
+- NO inserta usuarios, solo extrae IDs y valida FKs
+- Consume datos de snapshots (createdBy/updatedBy) para auditoría
+
 Características:
 - Volumen: ~200 configuraciones de formularios
 - Complejidad: formElements[] con avg 8.5 elementos, estructura profundamente anidada
@@ -11,7 +17,7 @@ Características:
 - JSONB: validations (55 estructuras), conditionals, soft_permissions
 
 Tablas destino:
-- {schema}. main: Configuración principal del formulario
+- {schema}.main: Configuración principal del formulario
 - {schema}.elements: Elementos del formulario (campos, botones, etc.) - 1:N
 - {schema}.allow_access: Privilegios de acceso - 1:N
 - {schema}.allow_create: Privilegios de creación - 1:N
@@ -20,7 +26,9 @@ Tablas destino:
 
 import json
 from datetime import datetime
+from psycopg2.extras import execute_values
 from .base import BaseMigrator
+import config
 
 
 class LmlFormbuilderMigrator(BaseMigrator):
@@ -34,15 +42,16 @@ class LmlFormbuilderMigrator(BaseMigrator):
     def __init__(self, schema='lml_formbuilder'):
         """
         Constructor del migrador.
-        
         Args:
             schema: Nombre del schema destino en PostgreSQL
         """
         super().__init__(schema)
+        # Cola en memoria para acumular usuarios fantasmas antes de insertar en lote
+        self.ghost_users_queue = []
 
 
     # =========================================================================
-    # MÉTODOS PÚBLICOS - INTERFAZ REQUERIDA (Métodos Simples)
+    # MÉTODOS PÚBLICOS - INTERFAZ REQUERIDA
     # =========================================================================
     
     def get_primary_key_from_doc(self, doc):
@@ -64,12 +73,12 @@ class LmlFormbuilderMigrator(BaseMigrator):
     
     def initialize_batches(self):
         """
-        Retorna estructura vacía para acumular batches. 
+        Retorna estructura vacía para acumular batches.
         
-        Implementa interfaz de BaseMigrator. 
+        Implementa interfaz de BaseMigrator.
         
         La estructura refleja las tablas destino:
-        - main: Tuplas para lml_formbuilder. main
+        - main: Tuplas para lml_formbuilder.main
         - related: Dict con arrays para cada tabla relacionada
         
         Returns:
@@ -86,203 +95,84 @@ class LmlFormbuilderMigrator(BaseMigrator):
         }
 
     def extract_shared_entities(self, doc, cursor, caches):
-        """.. ."""
-        result = {
-            'customer_id': None,
-            'created_by_user_id': None,
-            'updated_by_user_id': None
-        }
-        
-        # === 1. Customer ID ===
-        customer_id = doc.get('customerId')
-        if customer_id and customer_id not in caches['customers']:
+        """
+        Extrae IDs. Si falta un usuario, lo guarda en memoria (cola) para insertarlo después.
+        """
+        # A. Cargar caché inicial de usuarios (Solo la primera vez)
+        if 'valid_user_ids' not in caches:
             try:
-                cursor.execute(
-                    "INSERT INTO public.customers (id) VALUES (%s) ON CONFLICT (id) DO NOTHING",
-                    (customer_id,)
-                )
-                caches['customers'].add(customer_id)
-            except Exception as e:  # ← Capturar error original
-                print(f"\n❌ ERROR EN INSERT CUSTOMER: {e}")
-                print(f"   Customer ID: {customer_id}")
-                print(f"   Doc _id: {doc.get('_id')}")
-                raise  # Re-lanzar para abortar migración
-        
-        result['customer_id'] = customer_id
-        
-        # === 2. CreatedBy user ===
-        created_by = doc.get('createdBy', {})
-        if created_by:
-            user_id = self._extract_user_id_from_action(created_by)
-            if user_id:
-                try:
-                    self._insert_user_if_needed(created_by. get('user', {}), cursor, caches)
-                    result['created_by_user_id'] = str(user_id)
-                except Exception as e:  # ← Capturar error original
-                    print(f"\n❌ ERROR EN INSERT CREATED_BY USER: {e}")
-                    print(f"   User ID: {user_id}")
-                    print(f"   Doc _id: {doc.get('_id')}")
-                    raise
-        
-        # === 3. UpdatedBy user ===
-        updated_by = doc.get('updatedBy', {})
-        if updated_by:
-            user_id = self._extract_user_id_from_action(updated_by)
-            if user_id:
-                try:
-                    self._insert_user_if_needed(updated_by.get('user', {}), cursor, caches)
-                    result['updated_by_user_id'] = str(user_id)
-                except Exception as e:  # ← Capturar error original
-                    print(f"\n❌ ERROR EN INSERT UPDATED_BY USER: {e}")
-                    print(f"   User ID: {user_id}")
-                    print(f"   Doc _id: {doc.get('_id')}")
-                    raise
-        
-        return result
+                cursor.execute("SELECT id FROM lml_users.main")
+                caches['valid_user_ids'] = {row[0] for row in cursor.fetchall()}
+            except Exception:
+                caches['valid_user_ids'] = set()
+
+        valid_users = caches['valid_user_ids']
+
+        # B. Procesar createdBy/updatedBy usando la nueva lógica
+        return {
+            'created_by_user_id': self._process_ghost_user(doc.get('createdBy'), valid_users),
+            'updated_by_user_id': self._process_ghost_user(doc.get('updatedBy'), valid_users),
+            'customer_id': doc.get('customerId')
+        }
 
 
     # =========================================================================
-    # MÉTODOS PRIVADOS - PROCESAMIENTO DE USUARIOS
+    # MÉTODOS PRIVADOS: EXTRACCIÓN DE IDS (NUEVO)
     # =========================================================================
     
-    def _extract_user_id_from_action(self, action_obj):
+    def _process_ghost_user(self, snapshot, valid_users_set):
         """
-        Extrae el ID de usuario de un objeto createdBy/updatedBy.
-        
-        La estructura puede variar:
-        - user puede ser un string (ID directo)
-        - user puede ser un objeto con 'id' o '_id'
-        
-        Args:
-            action_obj: Dict con estructura {user: .. ., userAgent: .. ., ...}
-            
-        Returns:
-            str | None: ID del usuario o None si no se encuentra
+        Verifica si el usuario existe. Si no, extrae sus datos y lo agrega a la cola de espera.
         """
-        if not action_obj or not isinstance(action_obj, dict):
+        if not snapshot or not isinstance(snapshot, dict):
             return None
         
-        user = action_obj. get('user', {})
+        user_data = snapshot.get('user', {})
+        user_id = None
         
-        # Caso 1: user es directamente un string/int (ID)
-        if isinstance(user, (str, int)):
-            return user
+        # Extracción del ID
+        if isinstance(user_data, (str, int)):
+            user_id = str(user_data)
+        elif isinstance(user_data, dict):
+            user_id = user_data.get('id') or user_data.get('_id')
+            if isinstance(user_id, dict): 
+                user_id = user_id.get('$oid')
         
-        # Caso 2: user es un objeto con campo 'id' o '_id'
-        if isinstance(user, dict):
-            user_id = user.get('id')
-            if user_id:
-                return user_id
+        if not user_id: return None
+        user_id = str(user_id)
+
+        # Filtro de basura (IDs muy cortos)
+        if len(user_id) < 5: return None
+
+        # --- LÓGICA CORE: COMPARACIÓN EN MEMORIA ---
+        if user_id not in valid_users_set:
             
-            mongo_id = user.get('_id')
-            if mongo_id:
-                if isinstance(mongo_id, dict):
-                    return mongo_id. get('$oid')
-                return mongo_id
-        
-        return None
-    
-    def _insert_user_if_needed(self, user_obj, cursor, caches):
-        """
-        Inserta un usuario en public.users si no existe.
-        
-        Maneja estructura completa con relaciones (area, subarea, role, groups). 
-        Inserta entidades relacionadas en orden de dependencias.
-        
-        Args:
-            user_obj: Dict con datos completos del usuario
-            cursor: Cursor de psycopg2
-            caches: Dict de sets para tracking de inserts
-        """
-        if not user_obj or not isinstance(user_obj, dict):
-            return
-        
-        user_id = user_obj. get('id')
-        if not user_id or user_id in caches['users']:
-            return
-        
-        # === Extraer relaciones ===
-        area = user_obj.get('area', {})
-        area_id = area.get('id') if isinstance(area, dict) else None
-        
-        subarea = user_obj. get('subarea', {})
-        subarea_id = subarea.get('id') if isinstance(subarea, dict) else None
-        
-        role = user_obj.get('role', {})
-        role_id = role.get('id') if isinstance(role, dict) else None
-        
-        # === Insertar entidades relacionadas (orden de dependencias) ===
-        
-        # 1. Areas (sin dependencias)
-        if area_id and area_id not in caches['areas']:
-            cursor. execute(
-                "INSERT INTO public.areas (id, name) VALUES (%s, %s) ON CONFLICT (id) DO NOTHING",
-                (area_id, area. get('name'))
-            )
-            caches['areas'].add(area_id)
-        
-        # 2. Subareas (sin dependencias)
-        if subarea_id and subarea_id not in caches['subareas']:
-            cursor.execute(
-                "INSERT INTO public.subareas (id, name) VALUES (%s, %s) ON CONFLICT (id) DO NOTHING",
-                (subarea_id, subarea.get('name'))
-            )
-            caches['subareas'].add(subarea_id)
-        
-        # 3. Roles (sin dependencias)
-        if role_id and role_id not in caches['roles']:
-            cursor.execute(
-                "INSERT INTO public. roles (id, name) VALUES (%s, %s) ON CONFLICT (id) DO NOTHING",
-                (role_id, role.get('name'))
-            )
-            caches['roles'].add(role_id)
-        
-        # === Insertar usuario (depende de area, subarea, role) ===
-        cursor.execute("""
-            INSERT INTO public.users (id, email, firstname, lastname, area_id, subarea_id, role_id)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (id) DO NOTHING
-        """, (
-            str(user_id),
-            user_obj.get('email'),
-            user_obj.get('firstname'),
-            user_obj. get('lastname'),
-            area_id,
-            subarea_id,
-            role_id
-        ))
-        
-        caches['users'].add(user_id)
-        
-        # === Insertar grupos (relación N:M) ===
-        groups = user_obj.get('groups', [])
-        for group in groups:
-            if not isinstance(group, dict):
-                continue
+            # Preparamos datos para restaurar
+            firstname = None
+            lastname = None
+            email = None
+            username = None
             
-            group_id = group.get('id')
-            if not group_id:
-                continue
+            if isinstance(user_data, dict):
+                firstname = user_data.get('firstname') or user_data.get('firstName') or 'Restored'
+                lastname = user_data.get('lastname') or user_data.get('lastName') or 'User'
+                email = user_data.get('email')
+                username = user_data.get('username') or user_data.get('userName')
+
+            # 1. Agregamos a la COLA
+            self.ghost_users_queue.append((user_id, firstname, lastname, email, username))
             
-            # Insertar grupo si no existe
-            if group_id not in caches['groups']:
-                cursor.execute(
-                    "INSERT INTO public.groups (id, name) VALUES (%s, %s) ON CONFLICT (id) DO NOTHING",
-                    (group_id, group.get('name'))
-                )
-                caches['groups'].add(group_id)
+            # 2. Agregamos al SET inmediatamente
+            valid_users_set.add(user_id)
             
-            # Insertar relación user-group (no necesita cache - PK compuesta evita duplicados)
-            cursor. execute(
-                "INSERT INTO public.user_groups (user_id, group_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
-                (str(user_id), group_id)
-            )
+        return user_id
+
 
     def extract_data(self, doc, shared_entities):
         """
         Extrae todos los datos del documento en estructura normalizada.
         
-        Implementa interfaz de BaseMigrator. 
+        Implementa interfaz de BaseMigrator.
         
         Args:
             doc: Documento MongoDB completo
@@ -299,7 +189,7 @@ class LmlFormbuilderMigrator(BaseMigrator):
                 }
             }
         """
-        formbuilder_id = self. get_primary_key_from_doc(doc)
+        formbuilder_id = self.get_primary_key_from_doc(doc)
         
         return {
             'main': self._extract_main_record(doc, shared_entities),
@@ -318,11 +208,11 @@ class LmlFormbuilderMigrator(BaseMigrator):
     
     def _extract_main_record(self, doc, shared_entities):
         """
-        Extrae el registro principal para lml_formbuilder.main.
+        Extrae el registro principal para lml_formbuilder.main. 
         
         Maneja:
         - Campos escalares (strings, bools, ints)
-        - Campos JSONB (dicts/arrays → json. dumps)
+        - Campos JSONB (dicts/arrays → json.dumps)
         - Timestamps (conversión de múltiples formatos)
         - FKs a entidades compartidas
         
@@ -391,39 +281,49 @@ class LmlFormbuilderMigrator(BaseMigrator):
             mongo_version
         )
 
-    def _parse_mongo_date(self, date_value):
+    def _parse_mongo_date(self, value):
         """
-        Parsea fechas de MongoDB en múltiples formatos.
+        Parsea Mongo Date a datetime de Python.
         
-        MongoDB exporta fechas en al menos 3 formatos:
-        1. Extended JSON: {"$date": "2021-03-04T17:34:21.974Z"}
-        2. String ISO8601: "2021-03-04T17:34:21. 974Z"
-        3. String ISO8601 sin milisegundos: "2021-03-04T17:34:21Z"
+        Formatos soportados:
+        - datetime nativo de pymongo
+        - ISO8601 con 'Z': '2021-03-22T07:49:18.242Z'
+        - ISO8601 con timezone: '2022-06-02T13:54:12.273+00:00'
+        - Extended JSON: {'$date': '...'}
         
         Args:
-            date_value: Valor del campo fecha (dict, string, o None)
-            
+            value: Valor del campo timestamp
+        
         Returns:
-            datetime | None: Fecha parseada o None si no es válida
+            datetime|None: Timestamp parseado o None
         """
-        if not date_value:
+        if not value:
             return None
         
-        # Caso 1: Extended JSON
-        if isinstance(date_value, dict) and '$date' in date_value:
-            date_value = date_value['$date']
+        try:
+            # Caso 1: Ya es datetime
+            if isinstance(value, datetime):
+                return value
+            
+            # Caso 2: Extended JSON
+            if isinstance(value, dict) and '$date' in value:
+                value = value['$date']
+            
+            # Caso 3: String ISO8601
+            if isinstance(value, str):
+                # Con 'Z' al final
+                if value.endswith('Z'):
+                    if '.' in value:
+                        return datetime.strptime(value, "%Y-%m-%dT%H:%M:%S.%fZ")
+                    else:
+                        return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ")
+                
+                # Con timezone explícito
+                if '+' in value or value.count('-') > 2:
+                    return datetime.fromisoformat(value)
         
-        # Caso 2 y 3: String ISO8601
-        if isinstance(date_value, str):
-            try:
-                # Con milisegundos
-                if '.' in date_value:
-                    return datetime.strptime(date_value, "%Y-%m-%dT%H:%M:%S.%fZ")
-                # Sin milisegundos
-                else:
-                    return datetime.strptime(date_value, "%Y-%m-%dT%H:%M:%SZ")
-            except ValueError:
-                return None
+        except (ValueError, TypeError):
+            return None
         
         return None
 
@@ -468,7 +368,7 @@ class LmlFormbuilderMigrator(BaseMigrator):
             actions_json = json.dumps(actions) if actions else None
             
             # Validations inline (diferente del validations global)
-            validations = elem. get('validations')
+            validations = elem.get('validations')
             validations_json = json.dumps(validations) if validations else None
             
             # Configuración PDF
@@ -516,7 +416,7 @@ class LmlFormbuilderMigrator(BaseMigrator):
             
             records.append((
                 formbuilder_id,
-                priv. get('id'),
+                priv.get('id'),
                 priv.get('name'),
                 priv.get('codigo_privilegio')
             ))
@@ -527,33 +427,39 @@ class LmlFormbuilderMigrator(BaseMigrator):
     # MÉTODOS PÚBLICOS - INSERCIÓN DE BATCHES
     # =========================================================================
     
-    def insert_batches(self, batches, cursor):
+    def insert_batches(self, batches, cursor, caches=None):
         """
-        Inserta todos los batches acumulados en PostgreSQL.
-        
-        Implementa interfaz de BaseMigrator. 
-        
-        Ejecuta inserts en orden de dependencias:
-        1. main (parent)
-        2. elements, allow_access, allow_create, allow_update (children con FK a main)
-        
-        Args:
-            batches: Dict con estructura {
-                'main': [tuplas],
-                'related': {
-                    'elements': [tuplas],
-                    'allow_access': [tuplas],
-                    'allow_create': [tuplas],
-                    'allow_update': [tuplas]
-                }
-            }
-            cursor: Cursor de psycopg2
+        1. Inserta usuarios fantasmas acumulados (Bulk Insert).
+        2. Inserta la data del formbuilder.
         """
+        # --- PASO CRÍTICO: Insertar usuarios fantasmas pendientes ---
+        if self.ghost_users_queue:
+            try:
+                execute_values(
+                    cursor,
+                    """
+                    INSERT INTO lml_users.main 
+                    (id, firstname, lastname, email, username, deleted, created_at, updated_at)
+                    VALUES %s
+                    ON CONFLICT (id) DO NOTHING
+                    """,
+                    self.ghost_users_queue,
+                    template="(%s, %s, %s, %s, %s, TRUE, NOW(), NOW())",
+                    page_size=1000
+                )
+
+                if caches and 'valid_user_ids' in caches:
+                    caches['valid_user_ids'].update([u[0] for u in self.ghost_users_queue])
+
+                self.ghost_users_queue = []
+            except Exception as e:
+                print(f"   ❌ Error insertando lote de ghost users: {e}")
+        
         # 1. Insertar tabla main (debe ir primero por FKs)
         if batches['main']:
             self._insert_main_batch(batches['main'], cursor)
         
-        # 2.  Insertar tablas relacionadas (orden no importa entre ellas, solo después de main)
+        # 2. Insertar tablas relacionadas
         for table_name, records in batches['related'].items():
             if records:
                 method_name = f'_insert_{table_name}_batch'
@@ -566,7 +472,7 @@ class LmlFormbuilderMigrator(BaseMigrator):
     
     def _insert_main_batch(self, records, cursor):
         """
-        Inserta batch en lml_formbuilder.main. 
+        Inserta batch en lml_formbuilder.main.
         
         Args:
             records: Lista de tuplas con valores para INSERT
@@ -598,7 +504,7 @@ class LmlFormbuilderMigrator(BaseMigrator):
 
     def _insert_elements_batch(self, records, cursor):
         """
-        Inserta batch en lml_formbuilder.elements. 
+        Inserta batch en lml_formbuilder.elements.
         
         Args:
             records: Lista de tuplas
@@ -625,7 +531,7 @@ class LmlFormbuilderMigrator(BaseMigrator):
     def _insert_allow_access_batch(self, records, cursor):
         """Inserta batch en lml_formbuilder.allow_access."""
         cursor.executemany(f"""
-            INSERT INTO {self. schema}.allow_access (
+            INSERT INTO {self.schema}.allow_access (
                 formbuilder_id,
                 privilege_id,
                 name,
@@ -636,7 +542,7 @@ class LmlFormbuilderMigrator(BaseMigrator):
     def _insert_allow_create_batch(self, records, cursor):
         """Inserta batch en lml_formbuilder.allow_create."""
         cursor.executemany(f"""
-            INSERT INTO {self.schema}. allow_create (
+            INSERT INTO {self.schema}.allow_create (
                 formbuilder_id,
                 privilege_id,
                 name,
@@ -654,4 +560,3 @@ class LmlFormbuilderMigrator(BaseMigrator):
                 codigo_privilegio
             ) VALUES (%s, %s, %s, %s)
         """, records)
-

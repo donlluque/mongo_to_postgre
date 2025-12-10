@@ -14,8 +14,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # --- IMPORTAR TODOS LOS MIGRADORES AQUÍ ---
 from migrators.lml_processes import LmlProcessesMigrator
-from migrators.lml_listbuilder import LmlListbuilderMigrator
-from migrators.lml_formbuilder import LmlFormbuilderMigrator  # <--- NUEVO
+from migrators. lml_listbuilder import LmlListbuilderMigrator
+from migrators.lml_formbuilder import LmlFormbuilderMigrator
+from migrators. lml_users import LmlUsersMigrator  # <--- NUEVO
 
 
 def get_migradores_instances():
@@ -23,7 +24,8 @@ def get_migradores_instances():
     return [
         ('LmlProcessesMigrator', LmlProcessesMigrator('lml_processes')),
         ('LmlListbuilderMigrator', LmlListbuilderMigrator('lml_listbuilder')),
-        ('LmlFormbuilderMigrator', LmlFormbuilderMigrator('lml_formbuilder')), # <--- NUEVO
+        ('LmlFormbuilderMigrator', LmlFormbuilderMigrator('lml_formbuilder')),
+        ('LmlUsersMigrator', LmlUsersMigrator('lml_users')),  # <--- NUEVO
     ]
 
 
@@ -40,7 +42,7 @@ def test_batch_tables_naming():
         print(f"\n   📦 {name}:")
         print(f"      Schema: {migrator.schema}")
         
-        for table_name in batches['related'].keys():
+        for table_name in batches['related']. keys():
             # Validar snake_case (solo letras minúsculas y guiones bajos)
             if not table_name.replace('_', '').islower():
                 errors.append(f"{name}: Tabla '{table_name}' no sigue snake_case")
