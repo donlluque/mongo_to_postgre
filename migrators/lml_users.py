@@ -133,7 +133,7 @@ class LmlUsersMigrator(BaseMigrator):
             }
         }
     
-    def insert_batches(self, batches, cursor):
+    def insert_batches(self, batches, cursor, caches=None):
         """
         Inserta todos los batches acumulados en PostgreSQL.
         
@@ -149,23 +149,31 @@ class LmlUsersMigrator(BaseMigrator):
         """
         # Paso 1: UPSERT catálogos (permite corrección de nombres)
         if batches['related']['roles']:
-            self._insert_roles_batch(batches['related']['roles'], cursor)
+            # Deduplicar por ID (primer elemento de la tupla)
+            unique_roles = list({role[0]: role for role in batches['related']['roles']}.values())
+            self._insert_roles_batch(unique_roles, cursor)
         
         if batches['related']['areas']:
-            self._insert_areas_batch(batches['related']['areas'], cursor)
+            unique_areas = list({area[0]: area for area in batches['related']['areas']}.values())
+            self._insert_areas_batch(unique_areas, cursor)
         
         if batches['related']['subareas']:
-            self._insert_subareas_batch(batches['related']['subareas'], cursor)
+            unique_subareas = list({subarea[0]: subarea for subarea in batches['related']['subareas']}.values())
+            self._insert_subareas_batch(unique_subareas, cursor)
         
         if batches['related']['positions']:
-            self._insert_positions_batch(batches['related']['positions'], cursor)
+            unique_positions = list({pos[0]: pos for pos in batches['related']['positions']}.values())
+            self._insert_positions_batch(unique_positions, cursor)
         
         if batches['related']['signaturetypes']:
-            self._insert_signaturetypes_batch(batches['related']['signaturetypes'], cursor)
+            unique_sigtypes = list({sig[0]: sig for sig in batches['related']['signaturetypes']}.values())
+            self._insert_signaturetypes_batch(unique_sigtypes, cursor)
         
         # Paso 2: UPSERT usuarios (DO NOTHING para idempotencia)
         if batches['main']:
-            self._insert_main_batch(batches['main'], cursor)
+            # Los usuarios también pueden tener duplicados (aunque menos probable)
+            unique_users = list({user[0]: user for user in batches['main']}.values())
+            self._insert_main_batch(unique_users, cursor)
     
     def initialize_batches(self):
         """
