@@ -986,6 +986,130 @@ def setup_lml_processtypes_schema(cursor):
     print("   ✅ Schema 'lml_processtypes' creado (12 tablas + 12 índices)")
 
 
+def setup_lml_people_schema(cursor):
+    """
+    Crea schema lml_people con estructura normalizada.
+
+    ESTRUCTURA:
+    - main: Datos principales de personas (físicas y jurídicas)
+    - people_types: Catálogo de tipos (Humana v2, Jurídica v2)
+    - person_id_types: Catálogo de tipos de documento (DNI, CUIL, CUIT)
+
+    CARACTERÍSTICAS:
+    - Campos específicos por tipo (humana vs jurídica) como columnas nullable
+    - dynamic_fields JSONB para campos _3, _4, _5, _6, _7
+    - FKs a lml_users.main para auditoría (createdBy/updatedBy)
+    - Índices en campos de búsqueda frecuente (person_id, email, tipo)
+
+    DECISIONES DE DISEÑO:
+    - Nomenclatura semántica sin sufijos numéricos (_0, _1, etc.)
+    - Campos individuales en vez de JSONB para mantener modelo relacional
+    - customer_id sin FK (pendiente decisión arquitectura)
+    """
+    print("\n   🔧 Creando schema 'lml_people'...")
+
+    cursor.execute("CREATE SCHEMA IF NOT EXISTS lml_people")
+
+    # =========================================================================
+    # CATÁLOGOS EMBEBIDOS
+    # =========================================================================
+
+    # Tipos de Persona (Humana v2, Jurídica v2)
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS lml_people.people_types (
+            id VARCHAR(255) PRIMARY KEY,
+            name VARCHAR(255) NOT NULL,
+            alias VARCHAR(255) NOT NULL
+        )
+    """
+    )
+
+    # Tipos de Documento de Identidad (DNI, CUIL, CUIT)
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS lml_people.person_id_types (
+            id VARCHAR(255) PRIMARY KEY,
+            name VARCHAR(255) NOT NULL
+        )
+    """
+    )
+
+    # =========================================================================
+    # TABLA PRINCIPAL
+    # =========================================================================
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS lml_people.main (
+            people_id VARCHAR(255) PRIMARY KEY,
+            
+            -- Referencias a catálogos propios
+            people_type_id VARCHAR(255) NOT NULL REFERENCES lml_people.people_types(id),
+            person_id_type_id VARCHAR(255) NOT NULL REFERENCES lml_people.person_id_types(id),
+            
+            -- Datos comunes (presentes en ambos tipos de persona)
+            person_name VARCHAR(255) NOT NULL,
+            person_email VARCHAR(255),
+            person_id VARCHAR(255) NOT NULL,
+            
+            -- Campos específicos HUMANA (nullable)
+            domicilio_humana VARCHAR(500),
+            piso_humana VARCHAR(50),
+            departamento_humana VARCHAR(50),
+            
+            -- Campos específicos JURÍDICA (nullable)
+            tipo_persona_juridica VARCHAR(100),
+            tipo_asociacion VARCHAR(100),
+            tipo_organismo VARCHAR(100),
+            tipo_sociedad VARCHAR(100),
+            direccion_juridica VARCHAR(500),
+            
+            -- Campos dinámicos de formulario
+            dynamic_fields JSONB,
+            
+            -- Metadata
+            people_content TEXT,
+            customer_id VARCHAR(255),
+            
+            -- Auditoría
+            created_by_user_id VARCHAR(255) NOT NULL REFERENCES lml_users.main(id),
+            updated_by_user_id VARCHAR(255) NOT NULL REFERENCES lml_users.main(id),
+            created_at TIMESTAMP NOT NULL,
+            updated_at TIMESTAMP NOT NULL,
+            
+            -- Metadata técnica
+            deleted BOOLEAN DEFAULT FALSE,
+            lumbre_version INTEGER,
+            __v INTEGER
+        )
+    """
+    )
+
+    # =========================================================================
+    # ÍNDICES
+    # =========================================================================
+    cursor.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_people_type 
+        ON lml_people.main(people_type_id);
+        
+        CREATE INDEX IF NOT EXISTS idx_person_id 
+        ON lml_people.main(person_id);
+        
+        CREATE INDEX IF NOT EXISTS idx_person_email 
+        ON lml_people.main(person_email);
+        
+        CREATE INDEX IF NOT EXISTS idx_people_deleted 
+        ON lml_people.main(deleted);
+        
+        CREATE INDEX IF NOT EXISTS idx_people_created_by 
+        ON lml_people.main(created_by_user_id);
+    """
+    )
+
+    print("   ✅ Schema 'lml_people' creado (3 tablas + 5 índices)")
+
+
 def main():
     """
     Punto de entrada principal.
@@ -1016,6 +1140,7 @@ def main():
         setup_lml_listbuilder_schema(cursor)
         setup_lml_formbuilder_schema(cursor)
         setup_lml_processtypes_schema(cursor)
+        setup_lml_people_schema(cursor)
 
         conn.commit()
 
@@ -1031,6 +1156,7 @@ def main():
         print("   - lml_listbuilder: 9 tablas y 19 índices")
         print("   - lml_formbuilder: 5 tablas y 8 índices")
         print("   - lml_processtypes: 12 tablas y 12 índices")
+        print("   - lml_people: 3 tablas y 5 índices")
 
     except Exception as e:
         conn.rollback()

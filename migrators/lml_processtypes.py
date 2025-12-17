@@ -36,6 +36,7 @@ FOREIGN KEYS A lml_users:
 import json
 from psycopg2.extras import execute_values
 from .base import BaseMigrator
+from datetime import datetime
 
 
 class LmlProcesstypesMigrator(BaseMigrator):
@@ -532,12 +533,47 @@ class LmlProcesstypesMigrator(BaseMigrator):
         return records
 
     def _parse_timestamp(self, value):
-        """Parsea timestamp de MongoDB a string ISO."""
+        """
+        Convierte timestamp de MongoDB a formato compatible con PostgreSQL.
+
+        Formatos soportados:
+        - datetime nativo de pymongo (el más común)
+        - ISO8601 con 'Z': '2021-03-22T07:49:18.242Z'
+        - ISO8601 con timezone: '2022-06-02T13:54:12.273+00:00'
+        - Extended JSON: {'$date': '...'}
+
+        Returns:
+            datetime|None: Timestamp parseado o None
+        """
         if not value:
             return None
-        if isinstance(value, dict) and "$date" in value:
-            return value["$date"]
-        return str(value)
+
+        try:
+            # Caso 1: Ya es datetime (pymongo lo convierte automáticamente)
+            if isinstance(value, datetime):
+                return value
+
+            # Caso 2: Extended JSON
+            if isinstance(value, dict) and "$date" in value:
+                value = value["$date"]
+
+            # Caso 3: String ISO8601
+            if isinstance(value, str):
+                # Con 'Z' al final
+                if value.endswith("Z"):
+                    if "." in value:
+                        return datetime.strptime(value, "%Y-%m-%dT%H:%M:%S.%fZ")
+                    else:
+                        return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ")
+
+                # Con timezone explícito
+                if "+" in value or value.count("-") > 2:
+                    return datetime.fromisoformat(value)
+
+        except (ValueError, TypeError):
+            return None
+
+        return None
 
     # =========================================================================
     # MÉTODOS PRIVADOS - INSERCIÓN EN POSTGRESQL

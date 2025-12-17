@@ -12,30 +12,15 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# --- IMPORTAR TODOS LOS MIGRADORES AQUÍ ---
-from migrators.lml_processes import LmlProcessesMigrator
-from migrators.lml_listbuilder import LmlListbuilderMigrator
-from migrators.lml_formbuilder import LmlFormbuilderMigrator
-from migrators.lml_users import LmlUsersMigrator
-from migrators.lml_processtypes import LmlProcesstypesMigrator
-
-
-def get_migradores_instances():
-    """Helper para instanciar todos los migradores."""
-    return [
-        ("LmlProcessesMigrator", LmlProcessesMigrator("lml_processes")),
-        ("LmlListbuilderMigrator", LmlListbuilderMigrator("lml_listbuilder")),
-        ("LmlFormbuilderMigrator", LmlFormbuilderMigrator("lml_formbuilder")),
-        ("LmlUsersMigrator", LmlUsersMigrator("lml_users")),
-        ("LmlProcesstypesMigrator", LmlProcesstypesMigrator("lml_processtypes")),
-    ]
+# Usar helpers dinámicos en vez de imports hardcodeados
+from helpers import get_all_migrator_instances
 
 
 def test_batch_tables_naming():
     """Verifica que tablas en initialize_batches() siguen convención snake_case."""
     print("\n🔍 Test: Convención de nombres de tablas")
 
-    migradores = get_migradores_instances()
+    migradores = get_all_migrator_instances()
     errors = []
 
     for name, migrator in migradores:
@@ -56,11 +41,23 @@ def test_batch_tables_naming():
 
 
 def test_insert_methods_exist():
-    """Verifica que existe método _insert_<tabla>_batch() para cada tabla."""
+    """
+    Verifica que existe método de inserción para cada tabla relacionada.
+
+    La mayoría usan _insert_<tabla>_batch(), pero algunos casos especiales
+    usan otros nombres (ej: _sync_members_batch para sincronización).
+    """
     print("\n🔍 Test: Métodos de inserción para tablas relacionadas")
 
-    migradores = get_migradores_instances()
+    migradores = get_all_migrator_instances()
     errors = []
+
+    # Excepciones conocidas: migradores que usan nombres alternativos
+    EXCEPTIONS = {
+        "LmlUsersgroupsMigrator": {
+            "members": "_sync_members_batch"  # Usa DELETE + INSERT en vez de solo INSERT
+        }
+    }
 
     for name, migrator in migradores:
         batches = migrator.initialize_batches()
@@ -68,13 +65,19 @@ def test_insert_methods_exist():
         print(f"\n   📦 {name}:")
 
         for table_name in batches["related"].keys():
-            method_name = f"_insert_{table_name}_batch"
+            # Verificar si hay excepción conocida
+            if name in EXCEPTIONS and table_name in EXCEPTIONS[name]:
+                method_name = EXCEPTIONS[name][table_name]
+                note = "(método alternativo)"
+            else:
+                method_name = f"_insert_{table_name}_batch"
+                note = ""
 
             if not hasattr(migrator, method_name):
                 errors.append(f"{name}: Falta método {method_name}()")
                 print(f"      ❌ {method_name}() no existe")
             else:
-                print(f"      ✅ {method_name}() existe")
+                print(f"      ✅ {method_name}() existe {note}")
 
     return len(errors) == 0, errors
 
@@ -83,7 +86,7 @@ def test_schema_attribute():
     """Verifica que migradores tienen atributo 'schema' definido."""
     print("\n🔍 Test: Atributo 'schema' definido")
 
-    migradores = get_migradores_instances()
+    migradores = get_all_migrator_instances()
     errors = []
 
     for name, migrator in migradores:

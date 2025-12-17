@@ -112,6 +112,13 @@ COLLECTIONS = {
         ],
         "description": "Tipos de trámites/procesos y su configuración (formularios, permisos, flujos)",
     },
+    "lml_people_mesa4core": {
+        "postgres_schema": "lml_people",
+        "primary_key": "people_id",
+        "collection_type": "consumer",
+        "depends_on": ["lml_users_mesa4core"],
+        "description": "Registro de personas físicas y jurídicas con datos específicos por tipo",
+    },
 }
 
 # --- Orden de Migración ---
@@ -124,6 +131,7 @@ MIGRATION_ORDER = [
     "lml_listbuilder_mesa4core",  # Depende de users
     "lml_formbuilder_mesa4core",  # Depende de users
     "lml_processtypes_mesa4core",  # Depende de users, listbuilder, formbuilder
+    "lml_people_mesa4core",  # Depende de users
 ]
 
 # --- Schemas Fuente de Verdad ---

@@ -1,56 +1,26 @@
 """
-Test de interfaz para migradores.
+Tests de interfaz para migradores.
 
-Valida que todos los migradores:
-1. Heredan de BaseMigrator
-2. Implementan métodos requeridos con firmas correctas
-3. Retornan estructuras de datos esperadas
+Valida que todos los migradores implementan correctamente la interfaz
+BaseMigrator y tienen la estructura esperada.
 """
 
 import sys
 import os
 import inspect
 
-# Agregar project root al path
+# Agregar directorio raíz al path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from migrators.base import BaseMigrator
-
-# --- MIGRADORES REGISTRADOS ---
-from migrators.lml_processes import LmlProcessesMigrator
-from migrators.lml_listbuilder import LmlListbuilderMigrator
-from migrators.lml_formbuilder import LmlFormbuilderMigrator
-from migrators.lml_users import LmlUsersMigrator
-from migrators.lml_processtypes import LmlProcesstypesMigrator
-
-
-def get_migradores_instances():
-    """Helper para instanciar migradores para tests."""
-    return [
-        ("LmlProcessesMigrator", LmlProcessesMigrator("lml_processes")),
-        ("LmlListbuilderMigrator", LmlListbuilderMigrator("lml_listbuilder")),
-        ("LmlFormbuilderMigrator", LmlFormbuilderMigrator("lml_formbuilder")),
-        ("LmlUsersMigrator", LmlUsersMigrator("lml_users")),
-        ("LmlProcesstypesMigrator", LmlProcesstypesMigrator("lml_processtypes")),
-    ]
-
-
-def get_migradores_classes():
-    """Helper para obtener clases de migradores."""
-    return [
-        ("LmlProcessesMigrator", LmlProcessesMigrator),
-        ("LmlListbuilderMigrator", LmlListbuilderMigrator),
-        ("LmlFormbuilderMigrator", LmlFormbuilderMigrator),
-        ("LmlUsersMigrator", LmlUsersMigrator),
-        ("LmlProcesstypesMigrator", LmlProcesstypesMigrator),
-    ]
+from helpers import get_all_migrator_classes, get_all_migrator_instances
 
 
 def test_migrator_inheritance():
-    """Verifica que todos los migradores heredan de BaseMigrator."""
+    """Verifica que migradores heredan de BaseMigrator."""
     print("\n🔍 Test 1: Herencia de BaseMigrator")
 
-    migradores = get_migradores_classes()
+    migradores = get_all_migrator_classes()
     errors = []
 
     for name, migrator_class in migradores:
@@ -72,9 +42,10 @@ def test_required_methods():
         "extract_shared_entities",
         "extract_data",
         "insert_batches",
+        "get_primary_key_from_doc",
     ]
 
-    migradores = get_migradores_classes()
+    migradores = get_all_migrator_classes()
     errors = []
 
     for name, migrator_class in migradores:
@@ -89,7 +60,7 @@ def test_required_methods():
                 # Verificar que no es el método abstracto de la base
                 if method.__qualname__.startswith("BaseMigrator"):
                     errors.append(
-                        f"{name}. {method_name}() no está implementado (usa abstracto)"
+                        f"{name}.{method_name}() no está implementado (usa abstracto)"
                     )
                     print(f"      ❌ {method_name}() (abstracto)")
                 else:
@@ -102,23 +73,23 @@ def test_initialize_batches_structure():
     """Verifica que initialize_batches() retorna estructura correcta."""
     print("\n🔍 Test 3: Estructura de batches")
 
-    migradores = get_migradores_instances()
+    migradores = get_all_migrator_instances()
     errors = []
 
     for name, migrator in migradores:
         batches = migrator.initialize_batches()
 
         if not isinstance(batches, dict):
-            errors.append(f"{name}. initialize_batches() no retorna dict")
+            errors.append(f"{name}.initialize_batches() no retorna dict")
             print(f"   ❌ {name}: No retorna dict")
             continue
 
         if "main" not in batches:
-            errors.append(f"{name}. initialize_batches() no tiene key 'main'")
+            errors.append(f"{name}.initialize_batches() no tiene key 'main'")
             print(f"   ❌ {name}: Falta key 'main'")
 
         if "related" not in batches:
-            errors.append(f"{name}. initialize_batches() no tiene key 'related'")
+            errors.append(f"{name}.initialize_batches() no tiene key 'related'")
             print(f"   ❌ {name}: Falta key 'related'")
 
         if not isinstance(batches.get("related"), dict):
@@ -127,7 +98,9 @@ def test_initialize_batches_structure():
 
         if len(errors) == 0:
             print(f"   ✅ {name}: Estructura correcta")
-            print(f"      Related tables: {list(batches['related'].keys())}")
+            related_tables = list(batches.get("related", {}).keys())
+            if related_tables:
+                print(f"      Related tables: {related_tables}")
 
     return len(errors) == 0, errors
 
@@ -136,7 +109,7 @@ def test_method_signatures():
     """Verifica que métodos tienen firmas (parámetros) correctas."""
     print("\n🔍 Test 4: Firmas de métodos")
 
-    migradores = get_migradores_classes()
+    migradores = get_all_migrator_classes()
     expected_signatures = {
         "extract_shared_entities": ["self", "doc", "cursor", "caches"],
         "extract_data": ["self", "doc", "shared_entities"],
