@@ -146,7 +146,7 @@ def setup_lml_users_schema(cursor):
     """
     )
 
-    print("   ✅ Schema 'lml_users' creado (6 tablas)")
+    print("   ✅ Schema 'lml_users' creado (6 tablas y 6 índices)")
 
 
 def setup_lml_usersgroups_schema(cursor):
@@ -214,7 +214,7 @@ def setup_lml_usersgroups_schema(cursor):
     """
     )
 
-    print("   ✅ Schema 'lml_usersgroups' creado (2 tablas + 1 índice)")
+    print("   ✅ Schema 'lml_usersgroups' creado (2 tablas + 3 índices)")
 
 
 def setup_lml_formbuilder_schema(cursor):
@@ -1150,8 +1150,8 @@ def main():
 
         # Resumen
         print("\n📊 ESQUEMAS CREADOS:")
-        print("   - lml_users: 6 tablas (1 main + 5 catálogos)")
-        print("   - lml_usersgroups: 2 tablas (1 main + 1 relación N:M)")
+        print("   - lml_users: 6 tablas y 6 índices")
+        print("   - lml_usersgroups: 2 tablas y 3 índices")
         print("   - lml_processes: 5 tablas y 11 índices")
         print("   - lml_listbuilder: 9 tablas y 19 índices")
         print("   - lml_formbuilder: 5 tablas y 8 índices")
