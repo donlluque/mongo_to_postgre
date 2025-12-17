@@ -57,7 +57,11 @@ Es el archivo `migrators/lml_*.py`. Aquí ocurre la magia del **ETL** (_Extract,
   - **Ghost Users:** Si el `dbsetup.py` exige un usuario existente, el migrador debe verificar si existe y crearlo si falta.
   - **Filtering:** Si una sub-tabla (ej: `starting_privileges`) apunta a catálogos inexistentes, se filtran para evitar errores de FK.
 
-### 4. Fase de Ejecución (Orquestación)
+### 4. Fase de Test
+
+**`/tests/*`:** Hay varios tests para realizar previo a la migración. Se puede ejecutar `run_tests.py` para ejecutar toda la batería de tests completa.
+
+### 5. Fase de Ejecución (Orquestación)
 
 **`mongomigra.py`:** No contiene lógica de negocio específica. Su trabajo es:
 
