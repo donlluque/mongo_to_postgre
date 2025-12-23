@@ -7,17 +7,18 @@ Proyecto para realizar la migracion de una bbdd mongodb a postgre convirtiendola
 ```
 
 mongo_to_postgre/
-├── config.py                          # Ya existe, lo extendemos
-├── db_setup.py                        # Setup inicial (una sola vez)
-├── mongomigra.py                      # Solo migra datos
-├── export_sample.py                   # Genera una exportación de 200 documentos en json para analizar la estructura
-├── analyze_*.py                       # Crea txt con el análisis del sample de 200 documentos
-└── migrators/                         # Lógica específica por colección
-|    ├── lml_processes.py              # Logica de extraccion para esta coleccion especifica
-|    └── lml_listbuilder.py            # Igual que la anterior, cada coleccion = 1 archivo
-└── samples/                           # Samples y resultados de analisis
-     ├── lml_*_mesa4core_sample.json   # Sample con 200 documentos de la coleccion para analizar
-     └── lml_*_analysis.txt            # Resultado del análisis al correr analyze_*.py sobre el json de sample
+├── config.py                          # Ya existe, lo extendemos.
+├── db_setup.py                        # Setup inicial (una sola vez).
+├── mongomigra.py                      # Solo migra datos.
+├── export_sample.py                   # Exporta de 200 docs en json para analizar.
+├── analyze_*.py                       # Crea txt de análisis del sample de 200 docs.
+|    └── analyze_users.py              # Cada sample de 200 docs tiene su analyze_*.py
+└── migrators/                         # Lógica específica para cada colección.
+|    ├── lml_processes.py              # Logica de extraccion para coleccion especifica.
+|    └── lml_listbuilder.py            # Igual que anterior, cada coleccion = 1 archivo.
+└── samples/                           # Samples json y resultados de análisis
+     ├── lml_*_mesa4core_sample.json   # Sample con 200 documentos de la coleccion.
+     └── lml_*_analysis.txt            # Resultado del análisis del sample json.
 
 ```
 
