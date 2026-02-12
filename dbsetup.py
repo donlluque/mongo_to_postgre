@@ -1110,6 +1110,419 @@ def setup_lml_people_schema(cursor):
     print("   ✅ Schema 'lml_people' creado (3 tablas + 5 índices)")
 
 
+def setup_lml_documents_schema(cursor):
+    """
+    Crea schema lml_documents con estructura completa para documentos digitales.
+
+    COLECCIÓN ORIGEN: lml_documents_mesa4core
+
+    TABLAS:
+    - main: Datos principales del documento
+    - participants: Participantes del documento (firmantes + revisores)
+    - signers: Firmantes del documento
+    - reviewers: Revisores del documento
+    - share_with: Usuarios con acceso compartido
+    - movements: Historial de movimientos
+    - recipients: Destinatarios (users, areas, subareas, groups)
+    - recipient_emails: Destinatarios por email
+    - viewers: Visualizadores (users, areas, subareas)
+    - steps: Pasos del documento (workflow visual)
+    - instance_privileges: Privilegios por instancia
+    - access: Control de acceso (whoCanAccess)
+    - next_workflow: Próximo usuario en workflow (signer/participant/reviewer)
+
+    DECISIONES DE DISEÑO:
+    - Todos los campos JSONB anteriores ahora son tablas relacionales
+    - lumbreSignerReviewer y lumbreSubstitute → columnas en main (estructura simple)
+    - calculatedProps.everyoneCanAccess → columna booleana en main
+    - calculatedProps.whoCanAccess → tabla access
+    - recipients/viewers → tablas con entity_type para unificar users/areas/subareas/groups
+    - lumbreNext* → tabla unificada next_workflow con workflow_type
+    """
+    print("\n   🔧 Creando schema 'lml_documents'...")
+
+    cursor.execute("CREATE SCHEMA IF NOT EXISTS lml_documents")
+
+    # =========================================================================
+    # TABLA PRINCIPAL
+    # =========================================================================
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS lml_documents.main (
+            document_id VARCHAR(255) PRIMARY KEY,
+            
+            -- Identificación del documento
+            document_number VARCHAR(255),
+            document_name VARCHAR(500),
+            document_content TEXT,
+            
+            -- Tipo de documento (desnormalizado para queries rápidas)
+            document_type_id VARCHAR(255),
+            document_type_name VARCHAR(255),
+            document_type_alias VARCHAR(255),
+            document_type_numerator VARCHAR(100),
+            document_type_signature VARCHAR(100),
+            document_type_visibility VARCHAR(50),
+            document_type_comunicable VARCHAR(50),
+            
+            -- Prefijo del tipo (catálogo embebido)
+            type_prefix_id VARCHAR(255),
+            type_prefix_name VARCHAR(100),
+            
+            -- Estado del documento (catálogo embebido)
+            status_id VARCHAR(50),
+            status_name VARCHAR(100),
+            
+            -- Métricas de firmas y participación
+            lumbre_total_signers INTEGER DEFAULT 0,
+            lumbre_total_participants INTEGER DEFAULT 0,
+            lumbre_total_reviewers INTEGER,
+            lumbre_progress INTEGER DEFAULT 0,
+            lumbre_completed_signatures INTEGER DEFAULT 0,
+            lumbre_completed_participants INTEGER DEFAULT 0,
+            lumbre_completed_reviews INTEGER DEFAULT 0,
+            
+            -- Flags
+            deleted BOOLEAN DEFAULT FALSE,
+            has_external_signers BOOLEAN DEFAULT FALSE,
+            
+            -- Metadata PDF
+            pdf_num_pages INTEGER,
+            pdf_size INTEGER,
+            
+            -- Metadata Lumbre
+            lumbre_version INTEGER DEFAULT 1,
+            
+            -- Control de acceso (de calculatedProps)
+            everyone_can_access BOOLEAN DEFAULT TRUE,
+            
+            -- Signer Reviewer (estructura simple: id, name, done)
+            signer_reviewer_id VARCHAR(255),
+            signer_reviewer_name VARCHAR(500),
+            signer_reviewer_done BOOLEAN,
+            
+            -- Substitute (estructura simple: id, name)
+            substitute_id VARCHAR(255),
+            substitute_name VARCHAR(500),
+            
+            -- Campos JSONB que se mantienen (estructura variable o muy baja utilidad)
+            signer_position_map JSONB,
+            dynamic_fields JSONB,
+            
+            -- Timestamps
+            created_at TIMESTAMP,
+            updated_at TIMESTAMP,
+            document_date TIMESTAMP,
+            last_movement_date TIMESTAMP,
+            
+            -- Auditoría (FKs a lml_users)
+            customer_id VARCHAR(255),
+            created_by_user_id VARCHAR(255) REFERENCES lml_users.main(id),
+            updated_by_user_id VARCHAR(255) REFERENCES lml_users.main(id),
+            
+            -- Metadata técnica MongoDB
+            __v INTEGER
+        )
+    """
+    )
+
+    # =========================================================================
+    # TABLAS RELACIONALES - PARTICIPANTES (existentes)
+    # =========================================================================
+
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS lml_documents.participants (
+            id SERIAL PRIMARY KEY,
+            document_id VARCHAR(255) REFERENCES lml_documents.main(document_id) ON DELETE CASCADE,
+            user_id VARCHAR(255),
+            user_name VARCHAR(500),
+            action VARCHAR(10),
+            UNIQUE(document_id, user_id, action)
+        )
+    """
+    )
+
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS lml_documents.signers (
+            id SERIAL PRIMARY KEY,
+            document_id VARCHAR(255) REFERENCES lml_documents.main(document_id) ON DELETE CASCADE,
+            user_id VARCHAR(255),
+            user_name VARCHAR(500),
+            action VARCHAR(10),
+            UNIQUE(document_id, user_id)
+        )
+    """
+    )
+
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS lml_documents.reviewers (
+            id SERIAL PRIMARY KEY,
+            document_id VARCHAR(255) REFERENCES lml_documents.main(document_id) ON DELETE CASCADE,
+            user_id VARCHAR(255),
+            user_name VARCHAR(500),
+            action VARCHAR(10),
+            UNIQUE(document_id, user_id)
+        )
+    """
+    )
+
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS lml_documents.share_with (
+            id SERIAL PRIMARY KEY,
+            document_id VARCHAR(255) REFERENCES lml_documents.main(document_id) ON DELETE CASCADE,
+            user_id VARCHAR(255),
+            user_name VARCHAR(500),
+            UNIQUE(document_id, user_id)
+        )
+    """
+    )
+
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS lml_documents.movements (
+            id SERIAL PRIMARY KEY,
+            document_id VARCHAR(255) REFERENCES lml_documents.main(document_id) ON DELETE CASCADE,
+            created_at TIMESTAMP,
+            created_by_user_id VARCHAR(255),
+            created_by_user_name VARCHAR(500),
+            movement_data JSONB,
+            documentation JSONB
+        )
+    """
+    )
+
+    # =========================================================================
+    # NUEVAS TABLAS - RECIPIENTS Y VIEWERS
+    # =========================================================================
+
+    # Destinatarios (users, areas, subareas, groups)
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS lml_documents.recipients (
+            id SERIAL PRIMARY KEY,
+            document_id VARCHAR(255) REFERENCES lml_documents.main(document_id) ON DELETE CASCADE,
+            entity_type VARCHAR(20) NOT NULL,
+            entity_id VARCHAR(255) NOT NULL,
+            entity_name VARCHAR(500),
+            UNIQUE(document_id, entity_type, entity_id)
+        )
+    """
+    )
+
+    # Destinatarios por email (estructura diferente: id generado + email)
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS lml_documents.recipient_emails (
+            id SERIAL PRIMARY KEY,
+            document_id VARCHAR(255) REFERENCES lml_documents.main(document_id) ON DELETE CASCADE,
+            email_id VARCHAR(50),
+            email VARCHAR(500) NOT NULL,
+            UNIQUE(document_id, email)
+        )
+    """
+    )
+
+    # Visualizadores (users, areas, subareas)
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS lml_documents.viewers (
+            id SERIAL PRIMARY KEY,
+            document_id VARCHAR(255) REFERENCES lml_documents.main(document_id) ON DELETE CASCADE,
+            entity_type VARCHAR(20) NOT NULL,
+            entity_id VARCHAR(255) NOT NULL,
+            entity_name VARCHAR(500),
+            UNIQUE(document_id, entity_type, entity_id)
+        )
+    """
+    )
+
+    # =========================================================================
+    # NUEVAS TABLAS - DOCUMENT STEPS
+    # =========================================================================
+
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS lml_documents.steps (
+            id SERIAL PRIMARY KEY,
+            document_id VARCHAR(255) REFERENCES lml_documents.main(document_id) ON DELETE CASCADE,
+            position INTEGER DEFAULT 0,
+            step_order INTEGER NOT NULL,
+            title VARCHAR(255),
+            description VARCHAR(500),
+            avatar VARCHAR(500)
+        )
+    """
+    )
+
+    # =========================================================================
+    # NUEVAS TABLAS - INSTANCE PRIVILEGES
+    # =========================================================================
+
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS lml_documents.instance_privileges (
+            id SERIAL PRIMARY KEY,
+            document_id VARCHAR(255) REFERENCES lml_documents.main(document_id) ON DELETE CASCADE,
+            entity_type VARCHAR(20) NOT NULL,
+            entity_id VARCHAR(255) NOT NULL,
+            entity_name VARCHAR(500),
+            UNIQUE(document_id, entity_type, entity_id)
+        )
+    """
+    )
+
+    # =========================================================================
+    # NUEVAS TABLAS - ACCESS CONTROL (calculatedProps.whoCanAccess)
+    # =========================================================================
+
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS lml_documents.access (
+            id SERIAL PRIMARY KEY,
+            document_id VARCHAR(255) REFERENCES lml_documents.main(document_id) ON DELETE CASCADE,
+            entity_type VARCHAR(20) NOT NULL,
+            entity_id VARCHAR(255) NOT NULL,
+            UNIQUE(document_id, entity_type, entity_id)
+        )
+    """
+    )
+
+    # =========================================================================
+    # NUEVAS TABLAS - NEXT WORKFLOW (lumbreNextSigner/Participant/Reviewer)
+    # =========================================================================
+
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS lml_documents.next_workflow (
+            id SERIAL PRIMARY KEY,
+            document_id VARCHAR(255) REFERENCES lml_documents.main(document_id) ON DELETE CASCADE,
+            workflow_type VARCHAR(20) NOT NULL,
+            
+            -- Datos del usuario
+            user_id VARCHAR(255),
+            firstname VARCHAR(255),
+            lastname VARCHAR(255),
+            email VARCHAR(255),
+            user_type VARCHAR(50),
+            user_initials VARCHAR(10),
+            profile_picture VARCHAR(500),
+            
+            -- Rol
+            role_id VARCHAR(255),
+            role_name VARCHAR(255),
+            
+            -- Área
+            area_id VARCHAR(255),
+            area_name VARCHAR(255),
+            
+            -- Subárea
+            subarea_id VARCHAR(255),
+            subarea_name VARCHAR(255),
+            
+            -- Posición (opcional)
+            position_id VARCHAR(255),
+            position_name VARCHAR(255),
+            
+            -- Campos adicionales
+            action VARCHAR(50),
+            signature TEXT,
+            in_character_of VARCHAR(255),
+            
+            -- Reviewer embebido (cuando el signer tiene un reviewer asignado)
+            reviewer_id VARCHAR(255),
+            reviewer_name VARCHAR(500),
+            
+            UNIQUE(document_id, workflow_type)
+        )
+    """
+    )
+
+    # =========================================================================
+    # ÍNDICES
+    # =========================================================================
+    cursor.execute(
+        """
+        -- Índices en tabla main
+        CREATE INDEX IF NOT EXISTS idx_documents_number 
+        ON lml_documents.main(document_number);
+        
+        CREATE INDEX IF NOT EXISTS idx_documents_type_id 
+        ON lml_documents.main(document_type_id);
+        
+        CREATE INDEX IF NOT EXISTS idx_documents_status 
+        ON lml_documents.main(status_id);
+        
+        CREATE INDEX IF NOT EXISTS idx_documents_customer 
+        ON lml_documents.main(customer_id);
+        
+        CREATE INDEX IF NOT EXISTS idx_documents_created_by 
+        ON lml_documents.main(created_by_user_id);
+        
+        CREATE INDEX IF NOT EXISTS idx_documents_deleted 
+        ON lml_documents.main(deleted);
+        
+        CREATE INDEX IF NOT EXISTS idx_documents_created_at 
+        ON lml_documents.main(created_at);
+        
+        CREATE INDEX IF NOT EXISTS idx_documents_everyone_access 
+        ON lml_documents.main(everyone_can_access);
+        
+        -- Índices en tablas de participantes
+        CREATE INDEX IF NOT EXISTS idx_participants_document 
+        ON lml_documents.participants(document_id);
+        
+        CREATE INDEX IF NOT EXISTS idx_participants_user 
+        ON lml_documents.participants(user_id);
+        
+        CREATE INDEX IF NOT EXISTS idx_signers_document 
+        ON lml_documents.signers(document_id);
+        
+        CREATE INDEX IF NOT EXISTS idx_signers_user 
+        ON lml_documents.signers(user_id);
+        
+        CREATE INDEX IF NOT EXISTS idx_reviewers_document 
+        ON lml_documents.reviewers(document_id);
+        
+        CREATE INDEX IF NOT EXISTS idx_share_with_document 
+        ON lml_documents.share_with(document_id);
+        
+        CREATE INDEX IF NOT EXISTS idx_movements_document 
+        ON lml_documents.movements(document_id);
+        
+        -- Índices en nuevas tablas
+        CREATE INDEX IF NOT EXISTS idx_recipients_document 
+        ON lml_documents.recipients(document_id);
+        
+        CREATE INDEX IF NOT EXISTS idx_recipients_entity 
+        ON lml_documents.recipients(entity_type, entity_id);
+        
+        CREATE INDEX IF NOT EXISTS idx_recipient_emails_document 
+        ON lml_documents.recipient_emails(document_id);
+        
+        CREATE INDEX IF NOT EXISTS idx_viewers_document 
+        ON lml_documents.viewers(document_id);
+        
+        CREATE INDEX IF NOT EXISTS idx_steps_document 
+        ON lml_documents.steps(document_id);
+        
+        CREATE INDEX IF NOT EXISTS idx_privileges_document 
+        ON lml_documents.instance_privileges(document_id);
+        
+        CREATE INDEX IF NOT EXISTS idx_access_document 
+        ON lml_documents.access(document_id);
+        
+        CREATE INDEX IF NOT EXISTS idx_next_workflow_document 
+        ON lml_documents.next_workflow(document_id);
+    """
+    )
+
+    print("   ✅ Schema 'lml_documents' creado (13 tablas + 24 índices)")
+
+
 def main():
     """
     Punto de entrada principal.
@@ -1141,6 +1554,7 @@ def main():
         setup_lml_formbuilder_schema(cursor)
         setup_lml_processtypes_schema(cursor)
         setup_lml_people_schema(cursor)
+        setup_lml_documents_schema(cursor)
 
         conn.commit()
 
@@ -1157,6 +1571,7 @@ def main():
         print("   - lml_formbuilder: 5 tablas y 8 índices")
         print("   - lml_processtypes: 12 tablas y 12 índices")
         print("   - lml_people: 3 tablas y 5 índices")
+        print("   - lml_documents: 13 tablas y 24 índices")
 
     except Exception as e:
         conn.rollback()

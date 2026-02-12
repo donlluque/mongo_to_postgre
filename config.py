@@ -119,6 +119,13 @@ COLLECTIONS = {
         "depends_on": ["lml_users_mesa4core"],
         "description": "Registro de personas físicas y jurídicas con datos específicos por tipo",
     },
+    "lml_documents_mesa4core": {
+        "postgres_schema": "lml_documents",
+        "primary_key": "document_id",
+        "collection_type": "consumer",
+        "depends_on": ["lml_users_mesa4core"],
+        "description": "Documentos digitales con firmas, revisiones y workflow de aprobación",
+    },
 }
 
 # --- Orden de Migración ---
@@ -132,6 +139,7 @@ MIGRATION_ORDER = [
     "lml_formbuilder_mesa4core",  # Depende de users
     "lml_processtypes_mesa4core",  # Depende de users, listbuilder, formbuilder
     "lml_people_mesa4core",  # Depende de users
+    "lml_documents_mesa4core",  # Depende de users
 ]
 
 # --- Schemas Fuente de Verdad ---
